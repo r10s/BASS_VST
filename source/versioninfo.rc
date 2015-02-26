@@ -1,0 +1,21 @@
+
+#include <windows.h>
+#include "bass_vst_version.h"
+
+1 VERSIONINFO
+FILEVERSION BASS_VST_VERSION_MAJOR,BASS_VST_VERSION_MINOR,0,BASS_VST_VERSION_REVISION
+PRODUCTVERSION BASS_VST_VERSION_MAJOR,BASS_VST_VERSION_MINOR,0,BASS_VST_VERSION_REVISION
+FILEOS VOS__WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904e4"
+        BEGIN
+            VALUE "CompanyName",     "Bjoern Petersen Software Design and Development\0"
+            VALUE "LegalCopyright",  "©Bjoern Petersen Software Design and Development\0"
+            VALUE "FileDescription", "VST plugin for BASS " BASS_VST_VERSION_STR "\0"
+            VALUE "FileVersion",     BASS_VST_VERSION_STR "\0"
+        END
+    END
+END
