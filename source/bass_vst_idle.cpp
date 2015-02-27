@@ -9,6 +9,8 @@
  *
  *	Version History:
  *	22.04.2006	Created in this form (bp)
+ *  27.02.2015  Modified by Bernd Niedergesaess
+ *              - checkForChangedParam corrected
  *
  *  (C) Bjoern Petersen Software Design and Development
  *  
@@ -28,25 +30,22 @@ sjhash				s_unloadPendingInstances;
 long				s_unloadPendingCountdown = 0;
 
 
-
 static void checkForChangedParam(BASS_VST_PLUGIN* this_)
 {
 	// check if any parameters have beed changed ...
 	assert( _CrtCheckMemory() );
 
 	bool paramChanged = false;
+	int  oldParamCount = this_->numLastValues;
+	int  newParamCount = oldParamCount;
+
 	if( this_->aeffect->getParameter )
 	{
 		enterVstCritical(this_);
-			int paramIndex, paramCount = this_->aeffect->numParams;
-			if( paramCount > this_->expectedNumParams ) 
-			{
-				// some plugins change the numParam value :-(
-				paramCount = this_->expectedNumParams;
-			}
 
+			newParamCount = validateLastValues(this_);
 			float param, *params = this_->lastValues;
-			for( paramIndex = 0; paramIndex < paramCount; paramIndex++ )
+			for( int paramIndex = 0; paramIndex < newParamCount; paramIndex++ )
 			{
 				param = this_->aeffect->getParameter(this_->aeffect, paramIndex);
 				if( param != params[paramIndex] )
@@ -63,7 +62,7 @@ static void checkForChangedParam(BASS_VST_PLUGIN* this_)
 	{
 		// inform the user
 		if( this_->callback )
-			this_->callback(this_->vstHandle, BASS_VST_PARAM_CHANGED, 0, 0, this_->callbackUserData);
+			this_->callback(this_->vstHandle, BASS_VST_PARAM_CHANGED, oldParamCount, newParamCount, this_->callbackUserData);
 	}
 }
 

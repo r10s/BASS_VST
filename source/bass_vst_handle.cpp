@@ -9,6 +9,9 @@
  *
  *	Version History:
  *	22.04.2006	Created in this form (bp)
+ *  27.02.2015  Modified by Bernd Niedergesaess
+ *              - tempChunkData clean-up
+ *              - validateLastValues added
  *
  *  (C) Bjoern Petersen Software Design and Development
  *  
@@ -175,6 +178,9 @@ static void destroyHandle(BASS_VST_PLUGIN* this_)
 	if( this_->tempProgramValueBuf )
 		free(this_->tempProgramValueBuf);
 
+	if (this_->tempChunkData)
+		free(this_->tempChunkData);
+
 	freeChansBuffers(this_);
 	freeTempBuffer(this_);
 
@@ -283,12 +289,57 @@ void leaveVstCritical(BASS_VST_PLUGIN* this_)
 	LeaveCriticalSection(&this_->vstCritical_);
 }
 
+/*****************************************************************************
+ *  lastValues checking and dynamic resizing
+ *****************************************************************************/
+
+
+int validateLastValues(BASS_VST_PLUGIN* this_)
+{
+	if( this_->aeffect->getParameter )
+	{
+		int paramCount = this_->aeffect->numParams;
+		// check, if the param count has changed
+		if (paramCount != this_->numLastValues)
+		{
+			if (paramCount > this_->numLastValues)
+			{
+				// increase the lastValues array
+				long bytesNeeded = sizeof(float) * paramCount;
+				if( (this_->lastValues = (float*)realloc(this_->lastValues, bytesNeeded)) !=  NULL )
+				{
+					// success, so init the newly added values
+					int paramIndex = this_->numLastValues;
+					for( ; paramIndex < paramCount; paramIndex++ )
+					{
+						this_->lastValues[paramIndex] = this_->aeffect->getParameter(this_->aeffect, paramIndex);
+					}
+					// set the new number
+					this_->numLastValues = paramCount;
+				}   // else lastValues and numLastValues are left unchanged (should never happen)
+			}
+			else if (paramCount > 0)
+			{
+				// the new paramCount is smaller than the old paramCount
+				// lastValues is left unchanged (but numLastValues is set to the new value)
+				this_->numLastValues = paramCount;
+			}
+			else
+			{
+				// lastValues is left unchanged (but numLastValues is set to 0)
+				this_->numLastValues = 0;
+			}
+		}
+	}
+
+	return this_->numLastValues;
+}
+
 
 
 /*****************************************************************************
  *  handle forwarding
  *****************************************************************************/
-
 
 
 void checkForwarding()

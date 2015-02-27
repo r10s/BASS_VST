@@ -9,6 +9,8 @@ EXPORTS
 	BASS_VST_GetParam
 	BASS_VST_SetParam
 	BASS_VST_GetParamInfo
+	BASS_VST_GetChunk
+	BASS_VST_SetChunk
 	BASS_VST_GetProgramCount
 	BASS_VST_GetProgram
 	BASS_VST_GetProgramName

@@ -10,6 +10,9 @@
  *
  *	Version History:
  *	22.04.2006	Created in this form (bp)
+ *  27.02.2015  Modified by Bernd Niedergesess
+ *              - default param handling corrected
+ *              - ChunkData handling
  *
  *  (C) Bjoern Petersen Software Design and Development
  *  
@@ -95,11 +98,13 @@ typedef struct
 	#define				canDoubleReplacing(a) ( ((a)->aeffect->flags&effFlagsCanDoubleReplacing)!=0 && (a)->aeffect->processDoubleReplacing!=NULL )
 	
 	// handing parameters and programs
-	long				expectedNumParams; // we cache this value as some plugins change aeffect->numParams :-(
-	float*				defaultValues;
+	int 				numDefaultValues;  // we cache this value as some plugins change aeffect->numParams :-(
+	float*				defaultValues;     // only set at loading time caching the initial param values
+	int 				numLastValues;
 	float*				lastValues;
 	float*				tempProgramValueBuf;
 	char				tempProgramNameBuf[128]; // normally kVstMaxProgNameLen+1 (=24+1) should be enough, be a little safer
+	char*				tempChunkData;
 
 	// process handling
 	#define				MAX_CHANS 32
@@ -191,7 +196,7 @@ bool					closeProcess(BASS_VST_PLUGIN*);
 void CALLBACK			doEffectProcess(HDSP handle, DWORD channel, void* buffer, DWORD length, USERPTR user);
 DWORD CALLBACK			doInstrumentProcess(HSTREAM vstHandle, void* buffer, DWORD length, USERPTR user);
 
-
+int						validateLastValues(BASS_VST_PLUGIN*);
 
 
 // forwarding

@@ -9,6 +9,9 @@
  *
  *	Version History:
  *	22.04.2006	Created in this form (bp)
+ *  27.02.2015  Modified by Bernd Niedergesess
+ *              - validateLastValues corrected
+ *              - BASS_VST_Get/SetChunk added
  *
  *  (C) Bjoern Petersen Software Design and Development
  *
@@ -161,7 +164,6 @@ BOOL APIENTRY DllMain(HANDLE hModule, DWORD ul_reason_for_call, LPVOID lpReserve
 
 // type of the plugin's main entry function
 typedef AEffect *(*dllMainEntryFuncType) (audioMasterCallback);
-
 
 // s_inConstructionVstHandle is a little hack as this_ is not yet valid
 // when audioMasterCurrentId is called
@@ -319,6 +321,18 @@ static VstIntPtr audioMasterCallbackImpl(AEffect* aeffect_, // on load, aeffect_
 		// VST 2.00 opcodes
 		////////////////////////////////////////////////////////////
 
+		case audioMasterUpdateDisplay: // the plug-in reported an update (e.g. after a program load/rename or any other param change)
+			if (this_->effStartProcessCalled)
+			{
+				enterVstCritical(this_);
+					int oldParamCount = this_->numLastValues;
+					int newParamCount = validateLastValues(this_);
+				leaveVstCritical(this_);
+				if( this_->callback )
+					this_->callback(this_->vstHandle, BASS_VST_PARAM_CHANGED, oldParamCount, newParamCount, this_->callbackUserData);
+			}
+			break;
+
 		case audioMasterGetTime:
 			calcVstTimeInfo(this_, value);
 			ret =(VstIntPtr)&this_->vstTimeInfo;// the structure needs to be valid "a moment"; it is overwritten on the next call to audioMasterGetTime
@@ -437,7 +451,6 @@ static void CALLBACK onChannelDestroy(HSYNC handle, DWORD channel, DWORD data, U
 }
 
 
-
 static BOOL loadVstLibrary(BASS_VST_PLUGIN* this_, const void* dllFile, DWORD createFlags)
 {
 	dllMainEntryFuncType dllMainEntryFuncPtr;
@@ -447,7 +460,7 @@ static BOOL loadVstLibrary(BASS_VST_PLUGIN* this_, const void* dllFile, DWORD cr
 
 	// load the library
 	if( createFlags & BASS_UNICODE )
-		this_->hinst = LoadLibraryW((LPCWSTR)dllFile); // VC2008 requires LPCWSTR; before we're using const unsigned short
+		this_->hinst = LoadLibraryW((const LPCWSTR)dllFile);
 	else
 		this_->hinst = LoadLibraryA((const char*)dllFile);
 
@@ -514,6 +527,13 @@ static BOOL loadVstLibrary(BASS_VST_PLUGIN* this_, const void* dllFile, DWORD cr
 	// init the sample rate
 	long sampleRate = getSampleRate(this_);
 	this_->aeffect->dispatcher(this_->aeffect, effSetSampleRate, 0, 0, NULL, (float)sampleRate);
+	// dodgy hack to force some plugins to initialise the sample rate..
+	if (this_->aeffect->getParameter && (!(this_->aeffect->flags&effFlagsHasEditor)) && this_->aeffect->numParams > 0)
+    {
+        const float old = this_->aeffect->getParameter(this_->aeffect, 0);
+		this_->aeffect->setParameter(this_->aeffect, 0, (old < 0.5f) ? 1.0f : 0.0f);
+		this_->aeffect->setParameter(this_->aeffect, 0, old);
+    }
 
 	// this is a safety measure against some plugins that only set their buffers
 	// ONCE - this should ensure that they allocate a buffer that's large enough.
@@ -521,35 +541,41 @@ static BOOL loadVstLibrary(BASS_VST_PLUGIN* this_, const void* dllFile, DWORD cr
 	this_->aeffect->dispatcher(this_->aeffect, effSetBlockSize, 0, sampleRate/*one second*/, NULL, 0.0);
 	this_->aeffect->dispatcher(this_->aeffect, effMainsChanged, 0, 1/*resume*/, NULL, 0.0);
 
-	// remember all default values
-	this_->expectedNumParams = this_->aeffect->numParams;
-	if( this_->expectedNumParams > 0 )
-	{
-		long bytesNeeded = sizeof(float) * this_->expectedNumParams;
-		this_->defaultValues = (float*)malloc(bytesNeeded);
-		this_->lastValues = (float*)malloc(bytesNeeded);
-		this_->tempProgramValueBuf = (float*)malloc(bytesNeeded);
+	this_->numDefaultValues = 0;
+	this_->numLastValues = 0;
 
-		if( this_->defaultValues == NULL || this_->lastValues == NULL || this_->tempProgramValueBuf == NULL )
+	if( this_->aeffect->getParameter )
+	{
+		// select the first program
+		if( this_->aeffect->dispatcher(this_->aeffect, effGetProgram, 0, 0, NULL, 0.0) != 0 )
 		{
-			SET_ERROR(BASS_ERROR_MEM);
-			return false;
+			this_->aeffect->dispatcher(this_->aeffect, effSetProgram, 0, 0/*select first program*/, NULL, 0.0);
 		}
 
-		memset(this_->defaultValues, 0, bytesNeeded);
-		memset(this_->lastValues, 0, bytesNeeded);
-		
-		if( this_->aeffect->getParameter )
+		int paramCount = this_->aeffect->numParams;
+		if (paramCount >= 0)
 		{
-			// select the first program
-			if( this_->aeffect->dispatcher(this_->aeffect, effGetProgram, 0, 0, NULL, 0.0) != 0 )
+			// remember all defaultValues and init lastValues
+			long bytesNeeded = sizeof(float) * paramCount;
+			if (bytesNeeded == 0)
+				bytesNeeded = sizeof(float) * 24;
+			this_->defaultValues = (float*)malloc(bytesNeeded);
+			this_->lastValues = (float*)malloc(bytesNeeded);
+
+			if( this_->defaultValues == NULL || this_->lastValues == NULL)
 			{
-				this_->aeffect->dispatcher(this_->aeffect, effSetProgram, 0, 0/*select first program*/, NULL, 0.0);
+				SET_ERROR(BASS_ERROR_MEM);
+				return false;
 			}
 
-			// remember the defaults
+			memset(this_->defaultValues, 0, bytesNeeded);
+			memset(this_->lastValues, 0, bytesNeeded);
+
+			this_->numDefaultValues = paramCount;
+			this_->numLastValues = paramCount;
+
 			int paramIndex;
-			for( paramIndex = 0; paramIndex < this_->expectedNumParams; paramIndex++ )
+			for( paramIndex = 0; paramIndex < paramCount; paramIndex++ )
 			{
 				this_->defaultValues[paramIndex] = this_->aeffect->getParameter(this_->aeffect, paramIndex);
 			}
@@ -611,14 +637,17 @@ DWORD BASS_VSTDEF(BASS_VST_ChannelSetDSP)(DWORD channelHandle, const void* dllFi
 		}
 	}
 
+
 	// success
 	checkForwarding();
+
 	RETURN_SUCCESS(this_->vstHandle);
 
 Error:
 	// error - error already set by BASS or by using SET_ERROR
 	if( this_ )
 		unrefHandle(this_->vstHandle);
+
 	return 0;
 }
 
@@ -711,7 +740,6 @@ BOOL BASS_VSTDEF(BASS_VST_ChannelFree)(DWORD vstHandle)
  *****************************************************************************/
 
 
-
 static BASS_VST_PLUGIN* refHandle_checkParamIndex(DWORD vstHandle, int paramIndex)
 {
 	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
@@ -719,7 +747,7 @@ static BASS_VST_PLUGIN* refHandle_checkParamIndex(DWORD vstHandle, int paramInde
 		return NULL;
 
 	if( paramIndex < 0 
-	 || paramIndex >= this_->expectedNumParams
+	 || paramIndex >= this_->aeffect->numParams
 	 || this_->aeffect->getParameter == NULL
 	 || this_->aeffect->setParameter == NULL )
 	{
@@ -738,7 +766,7 @@ int BASS_VSTDEF(BASS_VST_GetParamCount)(DWORD vstHandle)
 	if( this_ == NULL )
 		RETURN_ERROR( BASS_ERROR_HANDLE );
 
-	int paramCount = this_->expectedNumParams;
+	int paramCount = this_->aeffect->numParams;
 
 	unrefHandle(vstHandle);
 
@@ -787,7 +815,10 @@ BOOL BASS_VSTDEF(BASS_VST_GetParamInfo)(DWORD vstHandle, int paramIndex, BASS_VS
 		strncpy(info->name, largeBuf, 8);
 		info->name[kVstMaxParamStrLen] = 0;
 
-		info->defaultValue = this_->defaultValues[paramIndex];
+		if (paramIndex < this_->numDefaultValues)
+			info->defaultValue = this_->defaultValues[paramIndex];
+		else
+			info->defaultValue = 0.0; // we don't know better (as we only cached the default values initially)
 
 	leaveVstCritical(this_);
 
@@ -823,7 +854,7 @@ BOOL BASS_VSTDEF(BASS_VST_SetParam)(DWORD vstHandle, int paramIndex, float value
 	if( this_ == NULL )
 		RETURN_ERROR( BASS_ERROR_HANDLE );
 
-	if( this_->editorIsOpen )
+	if( this_->editorIsOpen && paramIndex < this_->numLastValues)
 	{
 		EnterCriticalSection(&s_idleCritical);
 		this_->lastValues[paramIndex] = value;
@@ -846,6 +877,69 @@ BOOL BASS_VSTDEF(BASS_VST_SetParam)(DWORD vstHandle, int paramIndex, float value
 
 
 
+char* BASS_VSTDEF(BASS_VST_GetChunk)(DWORD vstHandle, BOOL isPreset, DWORD* length)
+{
+	*length = 0;
+	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
+	if( this_ == NULL )
+		RETURN_ERROR( BASS_ERROR_HANDLE );
+
+	if (!(this_->aeffect->flags&effFlagsProgramChunks))
+		RETURN_ERROR( BASS_ERROR_NOTAVAIL );
+
+	enterVstCritical(this_);
+
+		void* data = 0;
+		int size = this_->aeffect->dispatcher(this_->aeffect, effGetChunk, isPreset ? 1 : 0, 0, &data, 0.0f);
+		if (data != 0 && size > 0)
+        {
+			// alloc our temp buffer
+			this_->tempChunkData = (char*)realloc(this_->tempChunkData, size );
+            memcpy(this_->tempChunkData, data, size);
+			*length = size;
+        }
+		else
+		{
+			if (this_->tempChunkData)
+			{
+				free(this_->tempChunkData);
+				this_->tempChunkData = NULL;
+			}
+		}
+
+	leaveVstCritical(this_);
+
+	unrefHandle(vstHandle);
+
+	RETURN_SUCCESS( this_->tempChunkData );
+}
+
+
+DWORD BASS_VSTDEF(BASS_VST_SetChunk)(DWORD vstHandle, BOOL isPreset, const char* chunk, DWORD length)
+{
+	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
+	if( this_ == NULL )
+		RETURN_ERROR( BASS_ERROR_HANDLE );
+
+	if (!(this_->aeffect->flags&effFlagsProgramChunks))
+		RETURN_ERROR( BASS_ERROR_NOTAVAIL );
+
+	if(length <= 0)
+		RETURN_ERROR( BASS_ERROR_ILLPARAM );
+
+	enterVstCritical(this_);
+
+		int size = this_->aeffect->dispatcher(this_->aeffect, effSetChunk, isPreset ? 1 : 0, length, (void*)chunk, 0.0f);
+
+	leaveVstCritical(this_);
+
+	unrefHandle(vstHandle);
+
+	RETURN_SUCCESS( size );
+}
+
+
+
 /*****************************************************************************
  *  program handling
  *****************************************************************************/
@@ -860,7 +954,6 @@ static BASS_VST_PLUGIN* refHandle_checkProgramIndex(DWORD vstHandle, int program
 
 	if( programIndex < 0 
 	 || programIndex >= this_->aeffect->numPrograms
-	 || this_->expectedNumParams <= 0
 	 || this_->aeffect->getParameter == NULL
 	 || this_->aeffect->setParameter == NULL )
 	{
@@ -955,9 +1048,11 @@ const char* BASS_VSTDEF(BASS_VST_GetProgramName)(DWORD vstHandle, int programInd
 
 
 
-const float* BASS_VSTDEF(BASS_VST_GetProgramParam)(DWORD vstHandle, int programIndex)
+const float* BASS_VSTDEF(BASS_VST_GetProgramParam)(DWORD vstHandle, int programIndex, DWORD* length)
 {
 	assert( _CrtCheckMemory() );
+
+	*length = 0;
 
 	if( programIndex == -1 )
 	{
@@ -966,6 +1061,7 @@ const float* BASS_VSTDEF(BASS_VST_GetProgramParam)(DWORD vstHandle, int programI
 			RETURN_ERROR( BASS_ERROR_HANDLE );
 
 		float* param = this_->defaultValues;
+		*length = this_->numDefaultValues;
 
 		unrefHandle(vstHandle);
 
@@ -973,54 +1069,45 @@ const float* BASS_VSTDEF(BASS_VST_GetProgramParam)(DWORD vstHandle, int programI
 
 		RETURN_SUCCESS( param );
 	}
-	else
-	{
-		BASS_VST_PLUGIN* this_ = refHandle_checkProgramIndex(vstHandle, programIndex);
-		if( this_ == NULL )
-			RETURN_ERROR( BASS_ERROR_HANDLE );
 
+	BASS_VST_PLUGIN* this_ = refHandle_checkProgramIndex(vstHandle, programIndex);
+	if( this_ == NULL )
+		RETURN_ERROR( BASS_ERROR_HANDLE );
+
+	enterVstCritical(this_);
+
+		int orgProgramIndex = this_->aeffect->dispatcher(this_->aeffect, effGetProgram, 0, 0, NULL, 0.0);
+		if( orgProgramIndex != programIndex )
+		{
+			this_->aeffect->dispatcher(this_->aeffect, effSetProgram, 0, programIndex, NULL, 0.0);
+		}
+
+		int numParams = this_->aeffect->numParams;
+		// create the temp value buffer on-the-fly (as numParams might be dynamic)
+		this_->tempProgramValueBuf = (float*)realloc(this_->tempProgramValueBuf, sizeof(float) * numParams );
 		float* param = this_->tempProgramValueBuf;
 
-		enterVstCritical(this_);
-
-			int orgProgramIndex = this_->aeffect->dispatcher(this_->aeffect, effGetProgram, 0, 0, NULL, 0.0);
-			if( orgProgramIndex != programIndex )
-			{
-				this_->aeffect->dispatcher(this_->aeffect, effSetProgram, 0, programIndex, NULL, 0.0);
-			}
-
-			long numParams = this_->aeffect->numParams;
-			if( numParams < this_->expectedNumParams )
-			{
-				// this should not happen, but some plugins change the number of parameters when changin the program :-(
-				// - initalize the missing parameters with the default values -
-				memcpy(param, this_->defaultValues, this_->expectedNumParams * sizeof(float));
-			}
-			else if( numParams > this_->expectedNumParams )
-			{
-				// this should not happen, but some plugins change the number of parameters when changin the program :-(
-				// - make sure only to read the number of expected parameters -
-				numParams = this_->expectedNumParams;
-			}
-
+		if (this_->tempProgramValueBuf != NULL)
+		{
+			*length = numParams;
 			for( int i = 0; i < numParams; i++ )
 			{
 				param[i] = this_->aeffect->getParameter(this_->aeffect, i);
 			}
+		}
 
-			if( orgProgramIndex != programIndex )
-			{
-				this_->aeffect->dispatcher(this_->aeffect, effSetProgram, 0, orgProgramIndex, NULL, 0.0);
-			}
+		if( orgProgramIndex != programIndex )
+		{
+			this_->aeffect->dispatcher(this_->aeffect, effSetProgram, 0, orgProgramIndex, NULL, 0.0);
+		}
 
-		leaveVstCritical(this_);
+	leaveVstCritical(this_);
 
-		unrefHandle(vstHandle);
-		
-		assert( _CrtCheckMemory() );
+	unrefHandle(vstHandle);
+	
+	assert( _CrtCheckMemory() );
 
-		RETURN_SUCCESS( param );
-	}
+	RETURN_SUCCESS( param );
 }
 
 
@@ -1032,7 +1119,8 @@ BOOL BASS_VSTDEF(BASS_VST_SetProgram)(DWORD vstHandle, int programIndex)
 		RETURN_ERROR( BASS_ERROR_HANDLE );
 
 	enterVstCritical(this_);
-		this_->aeffect->dispatcher(this_->aeffect, effSetProgram, 0, programIndex, NULL, 0.0);
+		if (programIndex != this_->aeffect->dispatcher(this_->aeffect, effGetProgram, 0, 0, NULL, 0.0))
+			this_->aeffect->dispatcher(this_->aeffect, effSetProgram, 0, programIndex, NULL, 0.0);
 	leaveVstCritical(this_);
 
 	unrefHandle(vstHandle);
@@ -1077,7 +1165,7 @@ BOOL BASS_VSTDEF(BASS_VST_SetProgramName)(DWORD vstHandle, int programIndex, con
 
 
 
-BOOL BASS_VSTDEF(BASS_VST_SetProgramParam)(DWORD vstHandle, int programIndex, const float* param)
+BOOL BASS_VSTDEF(BASS_VST_SetProgramParam)(DWORD vstHandle, int programIndex, const float* param, DWORD length)
 {
 	if( param == NULL )
 		RETURN_ERROR( BASS_ERROR_ILLPARAM );
@@ -1094,19 +1182,12 @@ BOOL BASS_VSTDEF(BASS_VST_SetProgramParam)(DWORD vstHandle, int programIndex, co
 			this_->aeffect->dispatcher(this_->aeffect, effSetProgram, 0, programIndex, NULL, 0.0);
 		}
 
-		// -- is this correct? --> this_->aeffect->dispatcher(this_->aeffect, effBeginSetProgram, 0, 0, NULL, 0.0);
-			long numParams = this_->expectedNumParams; 
-			if( numParams > this_->aeffect->numParams )
-			{
-				// this should not happen, but some plugins change the number of parameters per program :-(
-				numParams = this_->aeffect->numParams;
-			}
-
-			for( i = 0; i < numParams; i++ )
-			{
+		long numParams = this_->aeffect->numParams;
+		for( i = 0; i < numParams; i++ )
+		{
+			if (i < length)
 				this_->aeffect->setParameter(this_->aeffect, i, param[i]);
-			}
-		// -- is this correct? --> this_->aeffect->dispatcher(this_->aeffect, effEndSetProgram, 0, 0, NULL, 0.0);
+		}
 
 		if( orgProgramIndex != programIndex )
 		{
@@ -1239,13 +1320,7 @@ BOOL BASS_VSTDEF(BASS_VST_EmbedEditor)
 			// remember the current parameters as we need to poll them to call BASS_VST_PARAM_CHANGED
 			if( this_->aeffect->getParameter )
 			{
-				int numParam = this_->aeffect->numParams;
-				if( numParam > this_->expectedNumParams )
-				{
-					// some plugins change the numParam value :-(
-					numParam = this_->expectedNumParams;
-				}
-
+				int numParam = validateLastValues(this_);
 				for( int paramIndex = 0; paramIndex < numParam; paramIndex++ )
 				{
 					this_->lastValues[paramIndex] = this_->aeffect->getParameter(this_->aeffect, paramIndex);
@@ -1582,3 +1657,4 @@ BOOL BASS_VSTDEF(BASS_VST_ProcessEventRaw)(DWORD vstHandle, const void* bassEven
 	else
 		RETURN_ERROR( error )
 }
+

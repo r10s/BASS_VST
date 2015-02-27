@@ -34,6 +34,12 @@
  *
  *  Version History:
  *
+ *  Version 2.4.0.7 (27/02/2015)
+ *
+ *      - BASS_VST_Get/SetChunk added (plain parameter data handling)
+ *      - BASS_VST_Get/SetProgramParam length parameter added
+ *
+ *
  *  Version 2.4.0.6 (19/11/2008)
  *
  *      - MIDI event handling improved
@@ -306,6 +312,19 @@ BASS_VSTSCOPE BOOL BASS_VSTDEF(BASS_VST_GetParamInfo)
 
 
 
+/* Get/Set the parameter data chunk as a plain byte array.
+ *
+ * length: contains or returns the size of the chunk data pointer.
+ * isPreset: true when saving a single program, false for all programs.
+ * chunk: pointer to the allocated memory block containing the chunk data.
+ */
+BASS_VSTSCOPE char* BASS_VSTDEF(BASS_VST_GetChunk)
+	(DWORD vstHandle, BOOL isPreset, DWORD* length);
+
+BASS_VSTSCOPE DWORD BASS_VSTDEF(BASS_VST_SetChunk)
+	(DWORD vstHandle, BOOL isPreset, const char* chunk, DWORD length);
+
+
 
 /*****************************************************************************
  *  VST Program Handling
@@ -347,13 +366,14 @@ BASS_VSTSCOPE BOOL BASS_VSTDEF(BASS_VST_SetProgram)
  * for the same vstHandle or until you delete the plugin.  The number of
  * elements in the returned array is equal to BASS_VST_GetParamCount().
  *
- * programIndex must be smaller than BASS_VST_GetProgramCount().  If you set
- * programIndex to -1, you can retrieve the plugin's default values (these are
- * the same values as returned by BASS_VST_GetParamInfo()).  This function does
- * not change the selected program.
+ * programIndex: must be smaller than BASS_VST_GetProgramCount().
+ *               If you set programIndex to -1, you can retrieve the plugin's default values
+ *               (these are he same values as returned by BASS_VST_GetParamInfo())
+ * length: returns the number of returned params.
+ * This function does not change the selected program.
  */
 BASS_VSTSCOPE const float* BASS_VSTDEF(BASS_VST_GetProgramParam)
-    (DWORD vstHandle, int programIndex);
+    (DWORD vstHandle, int programIndex, DWORD* length);
 
 
 
@@ -367,12 +387,13 @@ BASS_VSTSCOPE const float* BASS_VSTDEF(BASS_VST_GetProgramParam)
  *
  * programIndex must be smaller than BASS_VST_GetProgramCount().  This function
  * does not change the selected program.
+ * length: the number of params passed to this function.
  *
  * If you use BASS_VST_SetCallback(), the BASS_VST_PARAM_CHANGED event is only
  * posted if you select a program with parameters different from the prior.
  */
 BASS_VSTSCOPE BOOL BASS_VSTDEF(BASS_VST_SetProgramParam)
-    (DWORD vstHandle, int programIndex, const float* param);
+    (DWORD vstHandle, int programIndex, const float* param, DWORD length);
 
 
 
@@ -551,7 +572,7 @@ BASS_VSTSCOPE BOOL BASS_VSTDEF(BASS_VST_SetScope)
  * the view of BASS_VST.
  */
 typedef DWORD (CALLBACK VSTPROC)(DWORD vstHandle, DWORD action, DWORD param1, DWORD param2, void* user);
-#define BASS_VST_PARAM_CHANGED  1   /* some parameters are changed by the editor opened by BASS_VST_EmbedEditor(), NOT posted if you call BASS_VST_SetParam() */
+#define BASS_VST_PARAM_CHANGED  1   /* some parameters are changed by the editor opened by BASS_VST_EmbedEditor(), NOT posted if you call BASS_VST_SetParam(), param1=oldParamNum, param2=newParamNum */
 #define BASS_VST_EDITOR_RESIZED 2   /* the embedded editor window should be resized, the new width/height can be found in param1/param2 and in BASS_VST_GetInfo() */
 #define BASS_VST_AUDIO_MASTER   3   /* can be used to subclass the audioMaster callback, param1 is a pointer to a BASS_VST_AUDIO_MASTER_PARAM structure defined below */
 
@@ -653,8 +674,6 @@ BASS_VSTSCOPE BOOL BASS_VSTDEF(BASS_VST_ProcessEvent)
 
 BASS_VSTSCOPE BOOL BASS_VSTDEF(BASS_VST_ProcessEventRaw)
     (DWORD vstHandle, const void* event, DWORD length);
-
-
 
 
 /* If any BASS_VST function fails, you can use BASS_ErrorGetCode() to obtain
