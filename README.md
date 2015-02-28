@@ -41,7 +41,7 @@ Example:
     // create a normal BASS stream
     DWORD ch = BASS_StreamCreateFile(false, "c:\\sth.mp3", 0, 0, 0);
 
-    // assign a VST plugin DLL to the channel -- the returned hndle can be used
+    // assign a VST plugin DLL to the channel -- the returned handle can be used
     // with all BASS_VST_*() functions
     DWORD dsp = BASS_VST_ChannelSetDSP(ch, "c:\\equalizer.dll", 0, 0);
 
