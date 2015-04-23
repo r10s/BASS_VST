@@ -34,12 +34,6 @@
  *
  *  Version History:
  *
- *  Version 2.4.0.7 (27/02/2015)
- *
- *      - BASS_VST_Get/SetChunk added (plain parameter data handling)
- *      - BASS_VST_Get/SetProgramParam length parameter added
- *
- *
  *  Version 2.4.0.6 (19/11/2008)
  *
  *      - MIDI event handling improved
@@ -313,7 +307,7 @@ BASS_VSTSCOPE BOOL BASS_VSTDEF(BASS_VST_GetParamInfo)
 
 
 /* Get/Set the parameter data chunk as a plain byte array.
- *
+ * 
  * length: contains or returns the size of the chunk data pointer.
  * isPreset: true when saving a single program, false for all programs.
  * chunk: pointer to the allocated memory block containing the chunk data.
@@ -366,9 +360,7 @@ BASS_VSTSCOPE BOOL BASS_VSTDEF(BASS_VST_SetProgram)
  * for the same vstHandle or until you delete the plugin.  The number of
  * elements in the returned array is equal to BASS_VST_GetParamCount().
  *
- * programIndex: must be smaller than BASS_VST_GetProgramCount().
- *               If you set programIndex to -1, you can retrieve the plugin's default values
- *               (these are he same values as returned by BASS_VST_GetParamInfo())
+ * programIndex must be smaller than BASS_VST_GetProgramCount().
  * length: returns the number of returned params.
  * This function does not change the selected program.
  */
@@ -627,7 +619,11 @@ typedef struct
 #endif
     long     opcode;
     long     index;
+#if VST_64BIT_PLATFORM
+    long long     value;
+#else
     long     value;
+#endif
     void*    ptr;
     float    opt;
     long     doDefault;
@@ -674,6 +670,24 @@ BASS_VSTSCOPE BOOL BASS_VSTDEF(BASS_VST_ProcessEvent)
 
 BASS_VSTSCOPE BOOL BASS_VSTDEF(BASS_VST_ProcessEventRaw)
     (DWORD vstHandle, const void* event, DWORD length);
+
+
+/* StereoTools enhancement for the RDS functions
+ * BASS_VST_SetRdsPs set the Programme Service Name (PS) - typically 8 chars
+ * BASS_VST_SetRdsRt set the Radio Text (RT) - typically 64 chars for each line
+ * BASS_VST_SetRdsTa sets the Traffic-Programme-Signal (TP) and Traffic Announcement (TA)
+ */
+BASS_VSTSCOPE BOOL BASS_VSTDEF(BASS_VST_SupportsRds)
+    (DWORD vstHandle);
+
+BASS_VSTSCOPE BOOL BASS_VSTDEF(BASS_VST_SetRdsPs)
+    (DWORD vstHandle, char* text, bool now);
+
+BASS_VSTSCOPE BOOL BASS_VSTDEF(BASS_VST_SetRdsRt)
+    (DWORD vstHandle, bool on, char* text, bool now);
+
+BASS_VSTSCOPE BOOL BASS_VSTDEF(BASS_VST_SetRdsTa)
+    (DWORD vstHandle, bool ta, bool tp);
 
 
 /* If any BASS_VST function fails, you can use BASS_ErrorGetCode() to obtain

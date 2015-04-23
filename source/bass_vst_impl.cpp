@@ -9,9 +9,6 @@
  *
  *	Version History:
  *	22.04.2006	Created in this form (bp)
- *  27.02.2015  Modified by Bernd Niedergesess
- *              - validateLastValues corrected
- *              - BASS_VST_Get/SetChunk added
  *
  *  (C) Bjoern Petersen Software Design and Development
  *
@@ -249,10 +246,10 @@ static VstIntPtr audioMasterCallbackImpl(AEffect* aeffect_, // on load, aeffect_
 										 VstInt32 opcode, VstInt32 index,
 						                 VstIntPtr value, void *ptr, float opt)
 {
-	long ret = 0;
+	VstIntPtr ret = 0;
 
 	DWORD vstHandle = (aeffect_ && aeffect_->resvd1)?		// litte bug fix for 2.4.0.2: we also check for aeffect_->resvd1 now, so we will _always_ get a handle as 
-			aeffect_->resvd1 : s_inConstructionVstHandle;	// s_inConstructionVstHandle is always valid until aeffect_->resvd1 is set.
+			(DWORD)aeffect_->resvd1 : s_inConstructionVstHandle;	// s_inConstructionVstHandle is always valid until aeffect_->resvd1 is set.
 	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
 	if( this_ == NULL )
 		return 0;
@@ -347,7 +344,7 @@ static VstIntPtr audioMasterCallbackImpl(AEffect* aeffect_, // on load, aeffect_
 		case audioMasterSizeWindow:				// index: width, value: height
 			if( this_->callback )
 			{
-				this_->callback(vstHandle, BASS_VST_EDITOR_RESIZED, index, value, this_->callbackUserData);
+				this_->callback(vstHandle, BASS_VST_EDITOR_RESIZED, index, (DWORD)value, this_->callbackUserData);
 			}
 			break;
 
@@ -450,6 +447,10 @@ static void CALLBACK onChannelDestroy(HSYNC handle, DWORD channel, DWORD data, U
 	}
 }
 
+//FILE *out = fopen("bass_vst2.log", "a");
+//fprintf(out, "%s %S\r\n", "loadVstLibrary called", dllFile);
+//fflush(out);
+//fclose(out);
 
 static BOOL loadVstLibrary(BASS_VST_PLUGIN* this_, const void* dllFile, DWORD createFlags)
 {
@@ -517,7 +518,7 @@ static BOOL loadVstLibrary(BASS_VST_PLUGIN* this_, const void* dllFile, DWORD cr
 
 	// check of the module supports real time processing -
 	// checking for (PluginCanDo("noRealTime")&&PluginCanDo("offline")) is not correct: this only means a realtime plugin can also do offline processing
-	long plugCategory = this_->aeffect->dispatcher(this_->aeffect, effGetPlugCategory, 0, 0, NULL, 0.0);
+	long plugCategory = (long)this_->aeffect->dispatcher(this_->aeffect, effGetPlugCategory, 0, 0, NULL, 0.0);
 	if( plugCategory == kPlugCategOfflineProcess )
 	{
 		SET_ERROR(BASS_VST_ERROR_NOREALTIME);
@@ -890,7 +891,7 @@ char* BASS_VSTDEF(BASS_VST_GetChunk)(DWORD vstHandle, BOOL isPreset, DWORD* leng
 	enterVstCritical(this_);
 
 		void* data = 0;
-		int size = this_->aeffect->dispatcher(this_->aeffect, effGetChunk, isPreset ? 1 : 0, 0, &data, 0.0f);
+		int size = (int)this_->aeffect->dispatcher(this_->aeffect, effGetChunk, isPreset ? 1 : 0, 0, &data, 0.0f);
 		if (data != 0 && size > 0)
         {
 			// alloc our temp buffer
@@ -929,7 +930,7 @@ DWORD BASS_VSTDEF(BASS_VST_SetChunk)(DWORD vstHandle, BOOL isPreset, const char*
 
 	enterVstCritical(this_);
 
-		int size = this_->aeffect->dispatcher(this_->aeffect, effSetChunk, isPreset ? 1 : 0, length, (void*)chunk, 0.0f);
+		int size = (int)this_->aeffect->dispatcher(this_->aeffect, effSetChunk, isPreset ? 1 : 0, length, (void*)chunk, 0.0f);
 
 	leaveVstCritical(this_);
 
@@ -994,7 +995,7 @@ int BASS_VSTDEF(BASS_VST_GetProgram)(DWORD vstHandle)
 		RETURN_ERROR( BASS_ERROR_HANDLE );
 
 	enterVstCritical(this_);
-		int program = this_->aeffect->dispatcher(this_->aeffect, effGetProgram, 0, 0, NULL, 0.0);
+		int program = (int)this_->aeffect->dispatcher(this_->aeffect, effGetProgram, 0, 0, NULL, 0.0);
 	leaveVstCritical(this_);
 
 	unrefHandle(vstHandle);
@@ -1021,7 +1022,7 @@ const char* BASS_VSTDEF(BASS_VST_GetProgramName)(DWORD vstHandle, int programInd
 		if( this_->aeffect->dispatcher(this_->aeffect, effGetProgramNameIndexed, programIndex, 
 						0, programName, 0.0) == 0 )
 		{
-			int orgProgramIndex = this_->aeffect->dispatcher(this_->aeffect, effGetProgram, 0, 0, NULL, 0.0);
+			int orgProgramIndex = (int)this_->aeffect->dispatcher(this_->aeffect, effGetProgram, 0, 0, NULL, 0.0);
 			if( orgProgramIndex != programIndex )
 			{
 				this_->aeffect->dispatcher(this_->aeffect, effSetProgram, 0, programIndex, NULL, 0.0);
@@ -1053,30 +1054,13 @@ const float* BASS_VSTDEF(BASS_VST_GetProgramParam)(DWORD vstHandle, int programI
 	assert( _CrtCheckMemory() );
 
 	*length = 0;
-
-	if( programIndex == -1 )
-	{
-		BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
-		if( this_ == NULL )
-			RETURN_ERROR( BASS_ERROR_HANDLE );
-
-		float* param = this_->defaultValues;
-		*length = this_->numDefaultValues;
-
-		unrefHandle(vstHandle);
-
-		assert( _CrtCheckMemory() );
-
-		RETURN_SUCCESS( param );
-	}
-
 	BASS_VST_PLUGIN* this_ = refHandle_checkProgramIndex(vstHandle, programIndex);
 	if( this_ == NULL )
 		RETURN_ERROR( BASS_ERROR_HANDLE );
 
 	enterVstCritical(this_);
 
-		int orgProgramIndex = this_->aeffect->dispatcher(this_->aeffect, effGetProgram, 0, 0, NULL, 0.0);
+		int orgProgramIndex = (int)this_->aeffect->dispatcher(this_->aeffect, effGetProgram, 0, 0, NULL, 0.0);
 		if( orgProgramIndex != programIndex )
 		{
 			this_->aeffect->dispatcher(this_->aeffect, effSetProgram, 0, programIndex, NULL, 0.0);
@@ -1140,7 +1124,7 @@ BOOL BASS_VSTDEF(BASS_VST_SetProgramName)(DWORD vstHandle, int programIndex, con
 		RETURN_ERROR( BASS_ERROR_HANDLE );
 
 	enterVstCritical(this_);
-		int orgProgramIndex = this_->aeffect->dispatcher(this_->aeffect, effGetProgram, 0, 0, NULL, 0.0);
+		int orgProgramIndex = (int)this_->aeffect->dispatcher(this_->aeffect, effGetProgram, 0, 0, NULL, 0.0);
 		if( orgProgramIndex != programIndex )
 		{
 			this_->aeffect->dispatcher(this_->aeffect, effSetProgram, 0, programIndex, NULL, 0.0);
@@ -1176,7 +1160,7 @@ BOOL BASS_VSTDEF(BASS_VST_SetProgramParam)(DWORD vstHandle, int programIndex, co
 
 	enterVstCritical(this_);
 
-		int orgProgramIndex = this_->aeffect->dispatcher(this_->aeffect, effGetProgram, 0, 0, NULL, 0.0), i;
+		int orgProgramIndex = (int)this_->aeffect->dispatcher(this_->aeffect, effGetProgram, 0, 0, NULL, 0.0), i;
 		if( orgProgramIndex != programIndex )
 		{
 			this_->aeffect->dispatcher(this_->aeffect, effSetProgram, 0, programIndex, NULL, 0.0);
@@ -1185,7 +1169,7 @@ BOOL BASS_VSTDEF(BASS_VST_SetProgramParam)(DWORD vstHandle, int programIndex, co
 		long numParams = this_->aeffect->numParams;
 		for( i = 0; i < numParams; i++ )
 		{
-			if (i < length)
+			if (i < (int)length)
 				this_->aeffect->setParameter(this_->aeffect, i, param[i]);
 		}
 
@@ -1237,8 +1221,8 @@ BOOL BASS_VSTDEF(BASS_VST_GetInfo)(DWORD vstHandle, BASS_VST_INFO* info)
 		info->channelHandle		= this_->channelHandle;
 		info->uniqueID			= this_->aeffect->uniqueID;
 		info->effectVersion		= this_->aeffect->version;
-		info->vendorVersion		= this_->aeffect->dispatcher(this_->aeffect, effGetVendorVersion, 0, 0, NULL, 0.0);
-		info->effectVstVersion	= this_->aeffect->dispatcher(this_->aeffect, effGetVstVersion, 0, 0, NULL, 0.0);
+		info->vendorVersion		= (DWORD)this_->aeffect->dispatcher(this_->aeffect, effGetVendorVersion, 0, 0, NULL, 0.0);
+		info->effectVstVersion	= (DWORD)this_->aeffect->dispatcher(this_->aeffect, effGetVstVersion, 0, 0, NULL, 0.0);
 		info->hostVstVersion	= kVstVersion;
 		info->chansIn			= this_->aeffect->numInputs;
 		info->chansOut			= this_->aeffect->numOutputs;
@@ -1537,7 +1521,7 @@ static void queueEventRaw(BASS_VST_PLUGIN* this_, char midi0, char midi1, char m
 			e->type			=	kVstSysExType;
 			e->byteSize		=	sizeof(VstMidiSysexEvent) - 8;
 			e->deltaFrames	=	deltaFrames;
-			e->dumpBytes	=	sysexBytes;
+			e->dumpBytes	=	(VstInt32)sysexBytes;
 			e->sysexDump	=	((char*)e) + sizeof(VstMidiSysexEvent);
 			memcpy(e->sysexDump, sysexDump, sysexBytes);
 
@@ -1658,3 +1642,76 @@ BOOL BASS_VSTDEF(BASS_VST_ProcessEventRaw)(DWORD vstHandle, const void* bassEven
 		RETURN_ERROR( error )
 }
 
+
+BOOL BASS_VSTDEF(BASS_VST_SupportsRds)(DWORD vstHandle)
+{
+	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
+	if( this_ == NULL )
+		RETURN_ERROR(BASS_ERROR_HANDLE);
+	
+	DWORD error = BASS_OK;
+
+	error = BASS_ERROR_FILEFORM;
+
+	unrefHandle(vstHandle);
+
+	if( error == BASS_OK )
+		RETURN_SUCCESS( true )
+	else
+		RETURN_ERROR( error )
+}
+
+BOOL BASS_VSTDEF(BASS_VST_SetRdsPs)(DWORD vstHandle, char* text, bool now)
+{
+	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
+	if( this_ == NULL )
+		RETURN_ERROR(BASS_ERROR_HANDLE);
+	if( text == NULL )
+		RETURN_ERROR(BASS_ERROR_ILLPARAM);
+	DWORD error = BASS_OK;
+
+	//this_->SetRdsPsPtr(text, now);
+
+	unrefHandle(vstHandle);
+
+	if( error == BASS_OK )
+		RETURN_SUCCESS( true )
+	else
+		RETURN_ERROR( error )
+}
+
+BOOL BASS_VSTDEF(BASS_VST_SetRdsRt)(DWORD vstHandle, bool on, char* text, bool now)
+{
+	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
+	if( this_ == NULL )
+		RETURN_ERROR(BASS_ERROR_HANDLE);
+	if( text == NULL )
+		RETURN_ERROR(BASS_ERROR_ILLPARAM);
+	DWORD error = BASS_OK;
+
+	//this_->SetRdsRtPtr(on, text, now);
+
+	unrefHandle(vstHandle);
+
+	if( error == BASS_OK )
+		RETURN_SUCCESS( true )
+	else
+		RETURN_ERROR( error )
+}
+
+BOOL BASS_VSTDEF(BASS_VST_SetRdsTa)(DWORD vstHandle, bool ta, bool tp)
+{
+	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
+	if( this_ == NULL )
+		RETURN_ERROR(BASS_ERROR_HANDLE);
+	DWORD error = BASS_OK;
+
+	//this_->SetRdsTaPtr(ta, tp);
+
+	unrefHandle(vstHandle);
+
+	if( error == BASS_OK )
+		RETURN_SUCCESS( true )
+	else
+		RETURN_ERROR( error )
+}

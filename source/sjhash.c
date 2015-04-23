@@ -1,11 +1,4 @@
-/*
-** Based upon hash.c from sqlite which author disclaims copyright to this source code. In place of
-** a legal notice, here is a blessing:
-**
-** May you do good and not evil.
-** May you find forgiveness for yourself and forgive others.
-** May you share freely, never taking more than you give.
-*/
+
 #include "../tools/sjhash.h"
 #include <assert.h>
 #ifdef __WXMAC__
@@ -70,7 +63,7 @@ static int sjhashStrNICmp(const char *zLeft, const char *zRight, int N)
 static int sjhashNoCase(const char *z, int n)
 {
 	int h = 0;
-	if( n<=0 ) n = strlen(z);
+	if( n<=0 ) n = (int)strlen(z);
 	while( n > 0  ){
 		h = (h<<3) ^ h ^ sjhashUpperToLower[(unsigned char)*z++];
 		n--;

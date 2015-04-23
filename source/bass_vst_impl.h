@@ -10,9 +10,6 @@
  *
  *	Version History:
  *	22.04.2006	Created in this form (bp)
- *  27.02.2015  Modified by Bernd Niedergesess
- *              - default param handling corrected
- *              - ChunkData handling
  *
  *  (C) Bjoern Petersen Software Design and Development
  *  
@@ -36,26 +33,26 @@
 #include <crtdbg.h>
 #include <stdio.h>
 #include <math.h>
-#define strcasecmp stricmp /* strcasecmp() is ANSI, stricmp() not ... */
-#define strncasecmp strnicmp
+#define strcasecmp _stricmp /* strcasecmp() is ANSI, stricmp() not ... fuck Microsoft */
+#define strncasecmp _strnicmp
 
 
-// BASS includes - you can get these files at http://www.un4seen.com
+// BASS includes
 #define BASSDEF(f) (WINAPI f)	
 #define BASSSCOPE
-#include "bass.h" 
-#include "bass-addon.h"
-#include "bassmidi.h"
+#include "../bass/api-2.4/bass.h"
+#include "../bass/api-2.4/bass-addon.h"
+#include "../bass/api-2.4/bassmidi.h"
 
 // BASS VST includes
 #include "bass_vst.h"
 
-// VST SDK includes - you can get this file at https://www.steinberg.net/en/company/developer.html
-#include "vstsdk24/aeffectx.h" 
+// VST DSK includes
+#include "vstsdk24/aeffectx.h"
 
 
 // internal includes
-#include "sjhash.h"
+#include "../../tools/sjhash.h"
 #include "bass_vst_version.h"
 
 // in BASS 2.4 the user pointer are void*, in older versions, DWORD was used
@@ -69,7 +66,6 @@
 /*****************************************************************************
  *  Plugins
  *****************************************************************************/
-
 
 typedef struct
 {
@@ -96,7 +92,7 @@ typedef struct
 	// the underlying VST object
 	AEffect*			aeffect;
 	#define				canDoubleReplacing(a) ( ((a)->aeffect->flags&effFlagsCanDoubleReplacing)!=0 && (a)->aeffect->processDoubleReplacing!=NULL )
-	
+
 	// handing parameters and programs
 	int 				numDefaultValues;  // we cache this value as some plugins change aeffect->numParams :-(
 	float*				defaultValues;     // only set at loading time caching the initial param values

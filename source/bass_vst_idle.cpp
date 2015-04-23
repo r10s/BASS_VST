@@ -9,8 +9,6 @@
  *
  *	Version History:
  *	22.04.2006	Created in this form (bp)
- *  27.02.2015  Modified by Bernd Niedergesaess
- *              - checkForChangedParam corrected
  *
  *  (C) Bjoern Petersen Software Design and Development
  *  
@@ -197,7 +195,7 @@ void updateIdleTimers(BASS_VST_PLUGIN* this_)
 
 
 
-static VOID CALLBACK idleTimerProc(HWND,UINT,UINT,DWORD)
+static VOID CALLBACK idleTimerProc(HWND,UINT,UINT_PTR,DWORD)
 {
 	idleDo();
 }
@@ -209,7 +207,7 @@ void createIdleTimers()
 	// called from updateIdleTimers() where the critical section is already allocated
 	if( s_idleTimerHandle == 0 )
 	{
-		s_idleTimerHandle = SetTimer(0, 0, IDLE_FREQ, idleTimerProc);
+		s_idleTimerHandle = (UINT)SetTimer(0, 0, IDLE_FREQ, idleTimerProc);
 	}
 }
 
