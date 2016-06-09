@@ -85,7 +85,7 @@ be). Also note the version history and the disclaimer in this file.
 (C) Bjoern Petersen Software Design and Development
 VST PlugIn Interface Technology by Steinberg Media Technologies GmbH
 
-Contact: drsilver@silverjuke.net - http://www.silverjuke.net
+Contact: dr.silver@silverjuke.net - http://www.silverjuke.net
 
 You can donate via Paypal to paypal@silverjuke.net
 
