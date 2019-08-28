@@ -27,32 +27,56 @@
  *****************************************************************************/
 
 
-// windows includes
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#include <pthread.h>
+#define CRITICAL_SECTION				pthread_mutex_t
+#define InitializeCriticalSection(a)	pthread_mutex_init(a, NULL)
+#define TryEnterCriticalSection			!pthread_mutex_trylock
+#define EnterCriticalSection			pthread_mutex_lock
+#define LeaveCriticalSection			pthread_mutex_unlock
+#define DeleteCriticalSection			pthread_mutex_destroy	
+typedef CFBundleRef HINSTANCE;
+#else
 #include <windows.h>
-#include <assert.h>
 #include <crtdbg.h>
+#endif
+
+#include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <math.h>
-#define strcasecmp _stricmp /* strcasecmp() is ANSI, stricmp() not ... fuck Microsoft */
+#include <stddef.h>
+
+#ifdef _WIN32
+#define strcasecmp _stricmp
 #define strncasecmp _strnicmp
+#endif
 
 
 // BASS includes
 #define BASSDEF(f) (WINAPI f)	
 #define BASSSCOPE
-#include "../bass/api-2.4/bass.h"
-#include "../bass/api-2.4/bass-addon.h"
-#include "../bass/api-2.4/bassmidi.h"
+#include "bass/bass.h"
+#include "bass/bass-addon.h"
+#include "bass/bassmidi.h"
 
 // BASS VST includes
+#ifdef __APPLE__
+#pragma GCC visibility push(default)
+#endif
 #include "bass_vst.h"
+#ifdef __APPLE__
+#pragma GCC visibility pop
+#endif
 
 // VST DSK includes
 #include "vstsdk24/aeffectx.h"
 
 
 // internal includes
-#include "../../tools/sjhash.h"
+#include "sjhash.h"
 #include "bass_vst_version.h"
 
 // in BASS 2.4 the user pointer are void*, in older versions, DWORD was used
@@ -152,6 +176,11 @@ typedef struct
 	// do not use directly! always use the BASS_VST_LOCKER!
 	long				handleUsage;
 
+	// pluginID for shell plugin
+	long				pluginID;
+
+	//// vst plugin path
+	//char pluginPath[2048];
 } BASS_VST_PLUGIN;
 
 
@@ -200,10 +229,12 @@ void					checkForwarding();
 extern CRITICAL_SECTION	s_forwardCritical;
 
 // misc
-extern HMODULE			s_hDllKernel32;
 void					callMainsChanged(BASS_VST_PLUGIN* this_, long blockSize);
 long					fileSelOpen(BASS_VST_PLUGIN* this_, VstFileSelect* vstFs);
 void					fileSelClose(BASS_VST_PLUGIN* this_, VstFileSelect* vstFs);
 
+// Effect bank files.
+int					EffGetChunk(BASS_VST_PLUGIN* this_, void **ptr, bool isPreset = false);
+int					EffSetChunk(BASS_VST_PLUGIN* this_, void *data, long byteSize, bool isPreset = false);
 
 #endif /* __BASS_VST_IMPL_H__ */

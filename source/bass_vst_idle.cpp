@@ -22,11 +22,9 @@
 
 sjhash				s_idleHash;
 CRITICAL_SECTION	s_idleCritical;
-static UINT			s_idleTimerHandle = 0;
 
 sjhash				s_unloadPendingInstances;
 long				s_unloadPendingCountdown = 0;
-
 
 static void checkForChangedParam(BASS_VST_PLUGIN* this_)
 {
@@ -137,12 +135,17 @@ void idleDo()
 					elem = sjhashFirst(&s_unloadPendingInstances);
 					while( elem )
 					{
-						HINSTANCE inst = (HINSTANCE)sjhashKeysize(elem);
+						HINSTANCE inst = (HINSTANCE)sjhashKey(elem);
 						long      unloadCount = (long)sjhashData(elem);
 
 						while( unloadCount > 0 )
 						{
+#ifndef __APPLE__
 							FreeLibrary(inst);
+#else
+//							CFBundleUnloadExecutable (inst); // causes a crash with some VST?
+							CFRelease (inst);
+#endif
 							unloadCount--;
 						}
 
@@ -193,25 +196,34 @@ void updateIdleTimers(BASS_VST_PLUGIN* this_)
  *  low-level OS-based timers
  *****************************************************************************/
 
+#ifdef __APPLE__
+#include <Carbon/Carbon.h>
+static EventLoopTimerRef s_idleTimerHandle = 0;
+#else
+static UINT			s_idleTimerHandle = 0;
+#endif
 
-
+#ifdef __APPLE__
+pascal void idleTimerProc(EventLoopTimerRef inTimer, void *inUserData)
+#else
 static VOID CALLBACK idleTimerProc(HWND,UINT,UINT_PTR,DWORD)
+#endif
 {
 	idleDo();
 }
-
-
 
 void createIdleTimers()
 {
 	// called from updateIdleTimers() where the critical section is already allocated
 	if( s_idleTimerHandle == 0 )
 	{
+#ifdef __APPLE__
+		InstallEventLoopTimer(GetMainEventLoop(), kEventDurationNoWait, IDLE_FREQ * kEventDurationSecond / 1000, NewEventLoopTimerUPP(idleTimerProc), 0, &s_idleTimerHandle);
+#else
 		s_idleTimerHandle = (UINT)SetTimer(0, 0, IDLE_FREQ, idleTimerProc);
+#endif
 	}
 }
-
-
 
 void killIdleTimers()
 {
@@ -219,9 +231,11 @@ void killIdleTimers()
 	// and from updateIdleTimers() where the criticcal section is already allocated
 	if( s_idleTimerHandle )
 	{
+#ifdef __APPLE__
+		RemoveEventLoopTimer(s_idleTimerHandle);
+#else
 		KillTimer(NULL, s_idleTimerHandle);
+#endif
 		s_idleTimerHandle = 0;
 	}
 }
-
-

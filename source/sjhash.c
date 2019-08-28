@@ -1,7 +1,7 @@
 
-#include "../tools/sjhash.h"
+#include "sjhash.h"
 #include <assert.h>
-#ifdef __WXMAC__
+#ifdef __APPLE__
 	#include <stdlib.h>
 #else
 	#include <malloc.h>

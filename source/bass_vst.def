@@ -28,3 +28,13 @@ EXPORTS
 	BASS_VST_SetLanguage
 	BASS_VST_ProcessEvent
 	BASS_VST_ProcessEventRaw
+	BASS_VST_ChannelCreateEx
+	BASS_VST_ChannelSetDSPEx
+	BASS_VST_CheckPreset
+	BASS_VST_StoreOldPreset
+	BASS_VST_StorePreset
+	BASS_VST_RecallPreset
+	BASS_VST_HasEditor
+	BASS_VST_EditorInfo
+	BASS_VST_ReadPresetInfo
+	BASS_VST_Dispatcher

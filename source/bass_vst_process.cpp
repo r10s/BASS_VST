@@ -363,7 +363,7 @@ static void callProcess(BASS_VST_PLUGIN* this_, BASS_VST_PLUGIN* buffers, long n
 
 void CALLBACK doEffectProcess(HDSP dspHandle, DWORD channelHandle, void* buffer__, DWORD bufferBytes__, USERPTR vstHandle__)
 {
-	DWORD				vstHandle = (DWORD)vstHandle__;
+	DWORD				vstHandle = (DWORD)(intptr_t)vstHandle__; // double cast to stop Xcode complaining
 	BASS_CHANNELINFO	channelInfo;
 	int					i;
 	long				requiredInputs;
@@ -629,4 +629,23 @@ bool closeProcess(BASS_VST_PLUGIN* this_ /*same as info*/)
 }
 
 
+// Effect bank files.
+int EffGetChunk(BASS_VST_PLUGIN* this_, void **ptr, bool isPreset)
+{
+	int lSize = -1;
+	enterVstCritical(this_);
+	lSize = (int)this_->aeffect->dispatcher(this_->aeffect, effGetChunk, isPreset, 0, ptr, 0);
+	leaveVstCritical(this_);
+	return lSize;
+}
+
+int EffSetChunk(BASS_VST_PLUGIN* this_, void *data, long byteSize, bool isPreset) {
+	int lResult = -1;
+	enterVstCritical(this_);
+	this_->aeffect->dispatcher(this_->aeffect, effBeginSetProgram, 0, 0, NULL, 0.0);
+	lResult = (int)this_->aeffect->dispatcher(this_->aeffect, effSetChunk, isPreset, byteSize, data, 0.0);
+	this_->aeffect->dispatcher(this_->aeffect, effEndSetProgram, 0, 0, NULL, 0.0);
+	leaveVstCritical(this_);
+	return lResult;
+}
 

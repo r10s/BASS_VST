@@ -43,6 +43,7 @@
 
 
 #include "bass_vst_impl.h"
+#include "bass_vst_fxbank.h"
 
 
 
@@ -53,15 +54,7 @@
 
 
 // s_bassfunc is a pointer to the BASS plugin API as defined in api.h
-#ifdef _WIN32
-	static BASS_FUNCTIONS *s_bassfunc = NULL;
-#else
-	#ifdef __cplusplus
-	  extern "C"
-	#endif
-	void *_();
-	static BASS_FUNCTIONS* s_bassfunc=(BASS_FUNCTIONS*)_;
-#endif
+static const BASS_FUNCTIONS *s_bassfunc = NULL;
 
 
 
@@ -71,23 +64,27 @@ static bool s_mainOk = false;
 
 
 // global initialization
+#ifdef __APPLE__
+__attribute__((constructor))
+#endif
 static void mainInit()
 {
 	// version check:
-	// BASS <=2.2 returns the version as 0xjjjjnnnn, newer version numbers come as 0xjjnnrrrr
-	// (jj=major, nn=minor, rrrr=revision; beta versions have the revision 0xFFFF
-	if( !(s_bassfunc=(BASS_FUNCTIONS*)GetProcAddress(GetModuleHandle("bass"),"_"))
-	 || (BASS_GetVersion()!=MAKELONG(2,2) && HIWORD(BASS_GetVersion())!=0x0203 && HIWORD(BASS_GetVersion())!=0x0204) )
-	{
-		MessageBox(0,"Incorrect BASS.DLL version (2.2 - 2.4 is required)", "BASS_VST" BASS_VST_VERSION_STR,MB_ICONERROR);
+	if (HIWORD(BASS_GetVersion())!=BASSVERSION || !GetBassFunc()) {
+#ifdef _WIN32
+		MessageBox(0,"Incorrect BASS.DLL version ("BASSVERSIONTEXT" is required)","BASS_VST",MB_ICONERROR);
+#else
+		fputs("BASS_VST: Incorrect BASS version ("BASSVERSIONTEXT" is required)\n",stderr);
+#endif
 		return;
 	}
+	s_bassfunc = bassfunc;
 
 	initHandleHandling();
 
 	InitializeCriticalSection(&s_idleCritical);
 	sjhashInit(&s_idleHash, SJHASH_INT, /*keytype*/ 0/*copyKey*/);
-	sjhashInit(&s_unloadPendingInstances, SJHASH_INT, /*keytype*/ 0/*copyKey*/);
+	sjhashInit(&s_unloadPendingInstances, SJHASH_POINTER, /*keytype*/ 0/*copyKey*/);
 
 	s_mainOk = true;
 }
@@ -96,6 +93,9 @@ static void mainInit()
 
 
 // global exit
+#ifdef __APPLE__
+__attribute__((destructor))
+#endif
 static void mainExit()
 {
 	s_mainOk = false;
@@ -108,9 +108,6 @@ static void mainExit()
 	DeleteCriticalSection(&s_idleCritical);
 	sjhashClear(&s_idleHash);
 	sjhashClear(&s_unloadPendingInstances);
-	
-	if( s_hDllKernel32 )
-		FreeLibrary(s_hDllKernel32);
 }
 
 
@@ -191,7 +188,11 @@ static void calcVstTimeInfo(BASS_VST_PLUGIN* this_, VstIntPtr toCalc)
 
 	if( toCalc & kVstNanosValid )
 	{
+#ifndef __APPLE__
 		this_->vstTimeInfo.nanoSeconds = (double)timeGetTime() * 1000000.0L;
+#else
+		this_->vstTimeInfo.nanoSeconds = (double)clock() * 1000000.0L;
+#endif
 		this_->vstTimeInfo.flags |= kVstNanosValid;
 	}
 	
@@ -270,10 +271,14 @@ static VstIntPtr audioMasterCallbackImpl(AEffect* aeffect_, // on load, aeffect_
 		amp.opt			= opt;
 		amp.doDefault	= 1;
 		unrefHandle(vstHandle);
-			ret = callback(vstHandle, BASS_VST_AUDIO_MASTER, (DWORD)&amp, 0, callbackUserData);
-			if( amp.doDefault == 0 )
-				return ret;
-			ret = 0;
+#if VST_64BIT_PLATFORM
+		ret = callback(vstHandle, BASS_VST_AUDIO_MASTER, (DWORD)(intptr_t)&amp, (DWORD)((intptr_t)&amp>>32), callbackUserData);
+#else
+		ret = callback(vstHandle, BASS_VST_AUDIO_MASTER, (DWORD)(intptr_t)&amp, 0, callbackUserData);
+#endif
+		if( amp.doDefault == 0 )
+			return ret;
+		ret = 0;
 		this_ = refHandle(vstHandle); // reallocate the handle
 		if( this_ == NULL )
 			return 0;
@@ -296,7 +301,8 @@ static VstIntPtr audioMasterCallbackImpl(AEffect* aeffect_, // on load, aeffect_
 												// (eg. TripleComp crashes if the version is set to 2)
 
 		case audioMasterCurrentId:				// Returns the unique id of a plug that's currently loading
-			ret = vstHandle;
+//			ret = vstHandle;
+			ret = this_->pluginID;
 			break;
 
 		case audioMasterIdle:					// Call application idle routine (this will
@@ -374,7 +380,8 @@ static VstIntPtr audioMasterCallbackImpl(AEffect* aeffect_, // on load, aeffect_
 			 || strcasecmp((char*)ptr, "openfileselector")==0	// we support audioMasterOpenFileSelector?
 			 || strcasecmp((char*)ptr, "closefileselector")==0	// we support audioMasterCloseFileSelector?
 			 || strcasecmp((char*)ptr, "sizewindow")==0
-			 || strcasecmp((char*)ptr, "startstopprocess")==0 )	// we calls effStartProcess  and effStopProcess
+			 || strcasecmp((char*)ptr, "startstopprocess")==0 	// we calls effStartProcess  and effStopProcess
+				|| strcasecmp((char*)ptr, "shellcategory") == 0)
 			{
 				ret = 1;
 			}
@@ -433,7 +440,7 @@ static VstIntPtr audioMasterCallbackImpl(AEffect* aeffect_, // on load, aeffect_
 
 static void CALLBACK onChannelDestroy(HSYNC handle, DWORD channel, DWORD data, USERPTR vstHandle__)
 {
-	DWORD vstHandle = (DWORD)vstHandle__;
+	DWORD vstHandle = (DWORD)(intptr_t)vstHandle__; // double cast to stop Xcode complaining
 	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
 	if( this_ )
 	{
@@ -447,12 +454,30 @@ static void CALLBACK onChannelDestroy(HSYNC handle, DWORD channel, DWORD data, U
 	}
 }
 
-//FILE *out = fopen("bass_vst2.log", "a");
-//fprintf(out, "%s %S\r\n", "loadVstLibrary called", dllFile);
-//fflush(out);
-//fclose(out);
+static int ExceptionHandler(void)
+{
+	//printf("Exception");
+	return 0;
+}
 
-static BOOL loadVstLibrary(BASS_VST_PLUGIN* this_, const void* dllFile, DWORD createFlags)
+static void closeVstLibrary(BASS_VST_PLUGIN* this_)
+{
+	if (this_->hinst != NULL)
+	{
+		if (this_->aeffect)
+			this_->aeffect->dispatcher(this_->aeffect, effClose, 0, 0, NULL, 0.0);
+#ifndef __APPLE__
+		FreeLibrary(this_->hinst);
+#else
+		if (!this_->aeffect)
+			CFBundleUnloadExecutable(this_->hinst);
+		CFRelease(this_->hinst);
+#endif
+		this_->hinst = NULL;
+	}
+}
+
+static BOOL loadVstLibrary(BASS_VST_PLUGIN* this_, const void* dllFile, DWORD createFlags, char *pluginList = NULL, int pluginListSize = 0, int pluginID = 0)
 {
 	dllMainEntryFuncType dllMainEntryFuncPtr;
 
@@ -460,10 +485,38 @@ static BOOL loadVstLibrary(BASS_VST_PLUGIN* this_, const void* dllFile, DWORD cr
 	this_->createFlags						= createFlags;
 
 	// load the library
-	if( createFlags & BASS_UNICODE )
-		this_->hinst = LoadLibraryW((const LPCWSTR)dllFile);
-	else
-		this_->hinst = LoadLibraryA((const char*)dllFile);
+	//__try
+	try
+	{
+#ifndef __APPLE__
+		if (createFlags & BASS_UNICODE)
+			this_->hinst = LoadLibraryW((const LPCWSTR)dllFile);
+		else
+			this_->hinst = LoadLibraryA((const char*)dllFile);
+
+#else
+		CFStringRef fileNameString = CFStringCreateWithCString(kCFAllocatorDefault, (const char *)dllFile, kCFStringEncodingUTF8);
+		if (fileNameString == 0)
+		{
+			SET_ERROR(BASS_ERROR_FILEOPEN);
+			return false;
+		}
+		CFURLRef url = CFURLCreateWithFileSystemPath(kCFAllocatorDefault, fileNameString, kCFURLPOSIXPathStyle, false);
+		CFRelease(fileNameString);
+		if (url == 0)
+		{
+			SET_ERROR(BASS_ERROR_FILEOPEN);
+			return false;
+		}
+		this_->hinst = CFBundleCreate(kCFAllocatorDefault, url);
+		CFRelease(url);
+#endif
+
+	}	//__except (ExceptionHandler())
+	catch (...)
+	{
+		this_->hinst = NULL;
+	}
 
 	if( this_->hinst == NULL )
 	{
@@ -472,35 +525,90 @@ static BOOL loadVstLibrary(BASS_VST_PLUGIN* this_, const void* dllFile, DWORD cr
 	}
 
 	// get the plugin pointer
+#ifndef __APPLE__
 	dllMainEntryFuncPtr = (dllMainEntryFuncType)GetProcAddress(this_->hinst, "VSTPluginMain");
-	if( dllMainEntryFuncPtr == NULL )
+	if (dllMainEntryFuncPtr == NULL)
 	{
 		dllMainEntryFuncPtr = (dllMainEntryFuncType)GetProcAddress(this_->hinst, "main");
-		if( dllMainEntryFuncPtr == NULL )
-		{
-			SET_ERROR(BASS_ERROR_FILEFORM);
-			return false;
-		}
+	}
+#else
+	dllMainEntryFuncPtr = (dllMainEntryFuncType)CFBundleGetFunctionPointerForName(this_->hinst, CFSTR("VSTPluginMain"));
+	if (!dllMainEntryFuncPtr)
+	{
+		dllMainEntryFuncPtr = (dllMainEntryFuncType)CFBundleGetFunctionPointerForName(this_->hinst, CFSTR("main_macho"));
+	}
+#endif
+	if (dllMainEntryFuncPtr == NULL)
+	{
+		closeVstLibrary(this_);
+		SET_ERROR(BASS_ERROR_FILEFORM);
+		return false;
 	}
 
 	// get the aeffect instance
 	s_inConstructionVstHandle = this_->vstHandle;
-		this_->aeffect = (dllMainEntryFuncPtr)(audioMasterCallbackImpl);
-		if(  this_->aeffect == NULL 
+	this_->pluginID = pluginID;
+	this_->aeffect = (dllMainEntryFuncPtr)(audioMasterCallbackImpl);
+	if(  this_->aeffect == NULL 
 		 ||  this_->aeffect->magic != kEffectMagic
 	     || (this_->aeffect->__processDeprecated == NULL && this_->aeffect->processReplacing == NULL && !canDoubleReplacing(this_))
 		 ||  this_->aeffect->dispatcher == NULL )
-		{
+	{
+			closeVstLibrary(this_);
 			SET_ERROR(BASS_ERROR_FILEFORM);
 			s_inConstructionVstHandle = 0;
 			return false;
+	}
+
+	// check for shell plugin
+	long plugCategory = (long)this_->aeffect->dispatcher(this_->aeffect, effGetPlugCategory, 0, 0, NULL, 0.0);
+	if (plugCategory == kPlugCategShell)
+	{
+		if (pluginID == 0)
+		{
+			char tempName[65];
+			long uniqueID = 0;
+			int len = 0;
+			char name[128];
+
+			if (pluginList && pluginListSize > 0)
+			{
+				pluginList[0] = 0;
+
+				do
+				{
+					memset(tempName, 0, sizeof(tempName));
+					uniqueID = (long)this_->aeffect->dispatcher(this_->aeffect, effShellGetNextPlugin, 0, 0, tempName, 0.0);
+
+					if (uniqueID != 0)
+					{
+						if (tempName[0] != 0)
+						{
+							sprintf(name, "%s\t%ld\n", tempName, uniqueID);
+							int nameLen = (int)strlen(name);
+
+							if (pluginListSize > len + nameLen)
+								strcat(pluginList, name);
+							else
+								break;
+							len += nameLen;
+						}
+					}
+				} while (uniqueID != 0);
+			}
+
+			closeVstLibrary(this_);
+			SET_ERROR(BASS_ERROR_UNKNOWN);
+			return false;
 		}
-		this_->aeffect->resvd1 = (long)this_->vstHandle;
+	}
+	this_->aeffect->resvd1 = (long)this_->vstHandle;
 	s_inConstructionVstHandle = 0;
 
 	// check if there are enough inputs / outputs
-	if( this_->type==VSTeffect && this_->aeffect->numInputs <= 0 )
+	if (this_->type == VSTeffect && this_->aeffect->numInputs <= 0)
 	{
+		closeVstLibrary(this_);
 		SET_ERROR(BASS_VST_ERROR_NOINPUTS);
 		return false;
 	}
@@ -508,6 +616,7 @@ static BOOL loadVstLibrary(BASS_VST_PLUGIN* this_, const void* dllFile, DWORD cr
 	if(  this_->aeffect->numOutputs <= 0 
 	 || (this_->type==VSTinstrument && !(this_->aeffect->flags&effFlagsIsSynth)) )
 	{
+		closeVstLibrary(this_);
 		SET_ERROR(BASS_VST_ERROR_NOOUTPUTS);
 		return false;
 	}
@@ -518,9 +627,10 @@ static BOOL loadVstLibrary(BASS_VST_PLUGIN* this_, const void* dllFile, DWORD cr
 
 	// check of the module supports real time processing -
 	// checking for (PluginCanDo("noRealTime")&&PluginCanDo("offline")) is not correct: this only means a realtime plugin can also do offline processing
-	long plugCategory = (long)this_->aeffect->dispatcher(this_->aeffect, effGetPlugCategory, 0, 0, NULL, 0.0);
+	plugCategory = (long)this_->aeffect->dispatcher(this_->aeffect, effGetPlugCategory, 0, 0, NULL, 0.0);
 	if( plugCategory == kPlugCategOfflineProcess )
 	{
+		closeVstLibrary(this_);
 		SET_ERROR(BASS_VST_ERROR_NOREALTIME);
 		return false;
 	}
@@ -589,13 +699,486 @@ static BOOL loadVstLibrary(BASS_VST_PLUGIN* this_, const void* dllFile, DWORD cr
 
 
 
+BOOL BASS_VSTDEF(BASS_VST_CheckPreset)(const void* dllFile, DWORD createFlags)
+{
+	dllMainEntryFuncType dllMainEntryFuncPtr;
+	HINSTANCE			hinst;
+
+	// load the library
+	//__try
+	try
+	{
+#ifndef __APPLE__
+		if (createFlags & BASS_UNICODE)
+			hinst = LoadLibraryW((LPCWSTR)dllFile); // VC2008 requires LPCWSTR; before we're using const unsigned short
+		else
+			hinst = LoadLibraryA((const char*)dllFile);
+#else
+		CFStringRef fileNameString = CFStringCreateWithCString(NULL, (const char *)dllFile, kCFStringEncodingUTF8);
+		if (fileNameString == 0)
+		{
+			SET_ERROR(BASS_ERROR_FILEOPEN);
+			return false;
+		}
+		CFURLRef url = CFURLCreateWithFileSystemPath(NULL, fileNameString, kCFURLPOSIXPathStyle, false);
+		CFRelease(fileNameString);
+		if (url == 0)
+		{
+			SET_ERROR(BASS_ERROR_FILEOPEN);
+			return false;
+		}
+		hinst = CFBundleCreate(NULL, url);
+		CFRelease(url);
+#endif
+
+	}	//__except (ExceptionHandler())
+	catch (...)
+	{
+		hinst = NULL;
+	}
+
+	if (hinst == NULL)
+	{
+		SET_ERROR(BASS_ERROR_FILEOPEN);
+		return false;
+	}
+
+	// get the plugin pointer
+#ifndef __APPLE__
+	dllMainEntryFuncPtr = (dllMainEntryFuncType)GetProcAddress(hinst, "VSTPluginMain");
+	if (dllMainEntryFuncPtr == NULL)
+	{
+		dllMainEntryFuncPtr = (dllMainEntryFuncType)GetProcAddress(hinst, "main");
+	}
+#else
+	dllMainEntryFuncPtr = (dllMainEntryFuncType)CFBundleGetFunctionPointerForName(hinst, CFSTR("VSTPluginMain"));
+	if (!dllMainEntryFuncPtr)
+	{
+		dllMainEntryFuncPtr = (dllMainEntryFuncType)CFBundleGetFunctionPointerForName(hinst, CFSTR("main_macho"));
+	}
+#endif
+
+	if (dllMainEntryFuncPtr == NULL)
+	{
+#ifndef __APPLE__
+		FreeLibrary(hinst);
+#else
+		CFBundleUnloadExecutable(hinst);
+		CFRelease(hinst);
+#endif
+		SET_ERROR(BASS_ERROR_FILEFORM);
+		return false;
+	}
+
+#ifndef __APPLE__
+	FreeLibrary(hinst);
+#else
+//	CFBundleUnloadExecutable(hinst);
+	CFRelease(hinst);
+#endif
+	return true;
+}
+
+BOOL BASS_VSTDEF(BASS_VST_HasEditor)(DWORD vstHandle)
+{
+	if (vstHandle == 0) {
+		return false;
+	}
+
+	// Get plugin information.
+	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
+
+	if (this_ == NULL) {
+		unrefHandle(vstHandle);
+		return false;
+	}
+
+	// Get bass vst information.
+	BASS_VST_INFO vstInfo;
+	BASS_VST_GetInfo(vstHandle, &vstInfo);
+	if (vstInfo.hasEditor == 0) {
+		unrefHandle(vstHandle);
+		return false;
+	}
+
+	unrefHandle(vstHandle);
+	return true;
+}
+
+BASS_VSTSCOPE BOOL BASS_VSTDEF(BASS_VST_EditorInfo)(DWORD vstHandle, void* pInfoBuff) {
+	if (pInfoBuff == NULL) {
+		return false;
+	}
+	if (vstHandle == 0) {
+		return false;
+	}
+
+	// Get plugin information.
+	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
+
+	if (this_ == NULL) {
+		unrefHandle(vstHandle);
+		return false;
+	}
+
+	// Get bass vst information.
+	BASS_VST_INFO vstInfo;
+	BASS_VST_GetInfo(vstHandle, &vstInfo);
+	if (vstInfo.hasEditor == 0) {
+		unrefHandle(vstHandle);
+		return false;
+	}
+	char* szData = (char*)pInfoBuff;
+	char szBuff[256] = { 0, };
+
+	sprintf(szBuff, "%d", vstInfo.editorWidth);
+	sprintf(szBuff, "%s %d", szBuff, vstInfo.editorHeight);
+
+	strcat(szData, szBuff);
+	unrefHandle(vstHandle);
+	return true;
+}
+
+BOOL BASS_VSTDEF(BASS_VST_ReadPresetInfo)(const void* presetPath, void* presetData)
+{
+	if (presetPath == NULL || strlen((char*)presetPath) <= 0) {
+		return false;
+	}
+
+	if (presetData == NULL) {
+		return false;
+	}
+	// Set target path.
+	char path[1024] = { 0, };
+	if (presetPath != NULL) {
+		strcpy(path, (char*)presetPath);
+	}
+
+	// Open preset file.
+	FILE*fp = fopen(path, "r");
+	//	char szPresetInfoBuffer[2048] = {0,};
+	if (fp == NULL) {
+		return false;
+	}
+
+	// Make effect header.
+	char* szData = (char*)presetData;
+	char szBuff[1024] = { 0, };
+
+	fgets(szBuff, 1024, fp);
+	strcat(szData, szBuff);
+	fclose(fp);
+	return true;
+}
+
+BOOL BASS_VSTDEF(BASS_VST_StoreOldPreset)(const void* presetPath, DWORD uid, DWORD vstHandle) {
+	if (vstHandle == 0) {
+		return false;
+	}
+
+	// Get plugin information.
+	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
+
+	if (this_ == NULL) {
+		unrefHandle(vstHandle);
+		return false;
+	}
+
+	// Set target path.
+	char path[1024] = { 0, };
+	if (presetPath != NULL) {
+		strcpy(path, (char*)presetPath);
+	}
+
+	// Get VST parameter count.
+//	int nParamCnt = this_->expectedNumParams;
+	int nParamCnt = this_->aeffect->numParams;
+
+	// Get bass vst information.
+	BASS_VST_INFO vstInfo;
+	BASS_VST_GetInfo(vstHandle, &vstInfo);
+	if (strlen(path) <= 0)
+	{
+		//strcpy(path, "\\");
+		strcpy(path, vstInfo.effectName);
+	}
+
+	/*
+	<effect name="AaDelay" uid="123412343" path="VSTPlugin\\aDelay.dll">
+	<preset number="5" />
+	<param index="0" name="delay" value="0.5" />
+	</effect>
+	*/
+
+	// Open preset file.
+	FILE*fp = fopen(path, "w");
+	//	char szPresetInfoBuffer[2048] = {0,};
+
+	// Make effect header.
+	//fprintf(fp, "<effect name=\"%s\" uid=\"%d\" path=\"%s\" canEdit=\"%d\">\r\n", vstInfo.effectName, uid, this_->pluginPath, vstInfo.hasEditor);
+
+	// make preset tag.
+	fprintf(fp, "<preset number=\"%d\" />\r\n", nParamCnt);
+	float fpVal = 0.0;
+	char* szpName = 0;
+	BASS_VST_PARAM_INFO paramInfo;
+	for (int i = 0; i < nParamCnt; i++) {
+		fpVal = BASS_VST_GetParam(vstHandle, i);
+		BASS_VST_GetParamInfo(vstHandle, i, &paramInfo);
+		fprintf(fp, "<param index=\"%d\" name=\"%s\" value=\"%f\" />\r\n", i, paramInfo.name, fpVal);
+	}
+
+	// Make effect footer
+	fprintf(fp, "</effect>\r\n");
+
+	// Close preset file.
+	fclose(fp);
+
+	unrefHandle(vstHandle);
+	return true;
+}
+
+BOOL BASS_VSTDEF(BASS_VST_StorePreset)(const void* presetPath, DWORD uid, DWORD vstHandle)
+{
+	if (vstHandle == 0) {
+		return false;
+	}
+
+	// Get plugin information.
+	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
+
+	if (this_ == NULL) {
+		unrefHandle(vstHandle);
+		return false;
+	}
+
+	bool bRet = true;
+
+	if (this_->aeffect != NULL) {
+		CFxBank b;
+		if (this_->aeffect->flags & effFlagsProgramChunks) {
+			// Make chunk data.
+			void * pChunk;
+			int lSize = EffGetChunk(this_, &pChunk);
+			if (lSize)
+				b.SetSize(lSize);
+			if (b.IsLoaded())
+				b.SetChunk(pChunk);
+		}
+		else {
+			b.SetSize(this_->aeffect->numPrograms, this_->aeffect->numParams);
+			if (b.IsLoaded())
+			{
+				enterVstCritical(this_);
+				int i, j;
+				//int cProg = BASS_VST_GetProgram(vstHandle);
+				int cProg = (int)this_->aeffect->dispatcher(this_->aeffect, effGetProgram, 0, 0, NULL, 0.0);
+
+				int nParms = b.GetNumParams();
+#if VST_DEBUG
+				FILE* fp = fopen("storedebug.txt", "w");
+				fprintf(fp, "ProgNo: %d \r\n", cProg);
+				fprintf(fp, "Prog Num: %d \r\n", b.GetNumPrograms());
+				fprintf(fp, "Param Num: %d \r\n", nParms);
+#endif
+				if (b.GetNumPrograms() > 1)
+				{
+					for (i = 0; i < b.GetNumPrograms(); i++)
+					{
+						char szName[128] = { 0 };
+						// Set Program
+						this_->aeffect->dispatcher(this_->aeffect, effBeginSetProgram, 0, 0, NULL, 0.0);
+						this_->aeffect->dispatcher(this_->aeffect, effSetProgram, 0, i, NULL, 0.0);
+						this_->aeffect->dispatcher(this_->aeffect, effEndSetProgram, 0, 0, NULL, 0.0);
+
+						// Get Program name.
+						this_->aeffect->dispatcher(this_->aeffect, effGetProgramName, 0, 0, szName, 0.0);
+
+#if VST_DEBUG
+						fprintf(fp, "Prog Name(%d): %s \r\n", i, szName);
+#endif
+						//Set program name to fxbank.
+						b.SetProgramName(i, szName);
+						for (j = 0; j < nParms; j++) {
+							b.SetProgParm(i, j, this_->aeffect->getParameter(this_->aeffect, j));
+#if VST_DEBUG
+							fprintf(fp, "Param(%d, %d): %f \r\n", i, j, this_->aeffect->getParameter(this_->aeffect, j));
+#endif
+						}
+					}
+
+#if VST_DEBUG
+					fclose(fp);
+#endif
+					// Set Program
+					this_->aeffect->dispatcher(this_->aeffect, effBeginSetProgram, 0, 0, NULL, 0.0);
+					this_->aeffect->dispatcher(this_->aeffect, effSetProgram, 0, cProg, NULL, 0.0);
+					this_->aeffect->dispatcher(this_->aeffect, effEndSetProgram, 0, 0, NULL, 0.0);
+
+				}
+				else // such as FibreFilter
+				{
+					char szName[128] = { 0 };
+					// Get Program name.
+					this_->aeffect->dispatcher(this_->aeffect, effGetProgramName, 0, 0, szName, 0.0);
+					//Set program name to fxbank.
+					b.SetProgramName(0, szName);
+					for (j = 0; j < nParms; j++) {
+						b.SetProgParm(0, j, this_->aeffect->getParameter(this_->aeffect, j));
+					}
+				}
+
+				leaveVstCritical(this_);
+			}
+		}
+		if (b.IsLoaded())
+		{
+			b.SetFxID(this_->aeffect->uniqueID);
+			b.SetFxVersion(this_->aeffect->version);
+			if (b.SaveBank((char*)presetPath))
+			{
+				bRet = true;
+			}
+			else
+			{
+				bRet = false;
+			}
+		}
+		else
+		{
+			bRet = false;
+		}
+	}
+	else {
+		bRet = false;
+	}
+
+	unrefHandle(vstHandle);
+	return bRet;
+}
+
+
+BOOL BASS_VSTDEF(BASS_VST_RecallPreset)(const void* presetPath, DWORD vstHandle)
+{
+	if (vstHandle == 0) {
+		return false;
+	}
+
+	// Get plugin information.
+	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
+
+	if (this_ == NULL) {
+		unrefHandle(vstHandle);
+		return false;
+	}
+
+	// Set target path.
+	char path[1024] = { 0, };
+	if (presetPath != NULL) {
+		strcpy(path, (char*)presetPath);
+	}
+
+	CFxBank b(path);
+	bool brc = false;
+
+	if ((!b.IsLoaded()) ||
+		(this_->aeffect->uniqueID != b.GetFxID()))
+		return false;
+
+	// Check chunk data.
+	if (b.IsChunk())
+	{
+		if (!(this_->aeffect->flags & effFlagsProgramChunks))
+			return false;
+		brc = (EffSetChunk(this_, b.GetChunk(), b.GetChunkSize()) > 0);
+	}
+	else
+	{
+#if VST_DEBUG
+		FILE* fp = fopen("recalldebug.txt", "w");
+#endif
+
+		//int cProg = BASS_VST_GetProgram(vstHandle);
+		enterVstCritical(this_);
+		int cProg = (int)this_->aeffect->dispatcher(this_->aeffect, effGetProgram, 0, 0, NULL, 0.0);
+		int i, j;
+		int nParms = b.GetNumParams();
+#if VST_DEBUG
+		fprintf(fp, "ProgNo: %d \r\n", cProg);
+		fprintf(fp, "Prog Num: %d \r\n", b.GetNumPrograms());
+		fprintf(fp, "Param Num: %d \r\n", nParms);
+#endif
+		if (b.GetNumPrograms() > 1)
+		{
+			for (i = 0; i < b.GetNumPrograms(); i++)
+			{
+				// Set program.
+				this_->aeffect->dispatcher(this_->aeffect, effBeginSetProgram, 0, 0, NULL, 0.0);
+				this_->aeffect->dispatcher(this_->aeffect, effSetProgram, 0, i, NULL, 0.0);
+				this_->aeffect->dispatcher(this_->aeffect, effEndSetProgram, 0, 0, NULL, 0.0);
+
+				// Set program name.
+				this_->aeffect->dispatcher(this_->aeffect, effSetProgramName, 0, 0, b.GetProgramName(i), 0.0);
+
+#if VST_DEBUG
+				char szName[128] = { 0 };
+				this_->aeffect->dispatcher(this_->aeffect, effGetProgramName, 0, 0, szName, 0.0);
+				fprintf(fp, "Prog Name(%d): %s \r\n", i, szName);
+#endif
+
+				for (j = 0; j < nParms; j++)
+				{
+					// Set parameter to the selected program.
+					this_->aeffect->setParameter(this_->aeffect, j, b.GetProgParm(i, j));
+#if VST_DEBUG
+					fprintf(fp, "Param(%d, %d): %f \r\n", i, j, this_->aeffect->getParameter(this_->aeffect, j));
+#endif
+				}
+			}
+
+#if VST_DEBUG
+			fclose(fp);
+#endif
+
+			// Set program.
+			this_->aeffect->dispatcher(this_->aeffect, effBeginSetProgram, 0, 0, NULL, 0.0);
+			this_->aeffect->dispatcher(this_->aeffect, effSetProgram, 0, cProg, NULL, 0.0);
+			this_->aeffect->dispatcher(this_->aeffect, effEndSetProgram, 0, 0, NULL, 0.0);
+		}
+		else
+		{
+			for (j = 0; j < nParms; j++)
+			{
+				// Set parameter to the selected program.
+				this_->aeffect->setParameter(this_->aeffect, j, b.GetProgParm(0, j));
+			}
+		}
+
+		leaveVstCritical(this_);
+		brc = true;
+	}
+
+	unrefHandle(vstHandle);
+	return brc;
+}
+
+
+
 DWORD BASS_VSTDEF(BASS_VST_ChannelSetDSP)(DWORD channelHandle, const void* dllFile,
 										  DWORD createFlags, int priority)
+{
+	return BASS_VST_ChannelSetDSPEx(channelHandle, dllFile, createFlags, priority, NULL, 0, 0);
+}
+
+DWORD BASS_VSTDEF(BASS_VST_ChannelSetDSPEx)(DWORD channelHandle, const void* dllFile,
+	DWORD createFlags, int priority,
+	char *pluginList, int pluginListSize, int pluginID
+	)
 {
 	BASS_VST_PLUGIN*		this_ = NULL;
 
 	// attach ok?
-	if( !s_mainOk )
+	if (!s_mainOk)
 	{
 		SET_ERROR(BASS_ERROR_UNKNOWN);
 		goto Error;
@@ -603,52 +1186,49 @@ DWORD BASS_VSTDEF(BASS_VST_ChannelSetDSP)(DWORD channelHandle, const void* dllFi
 
 	// get the slot, load the library
 	this_ = createHandle(VSTeffect, 0);
-	if( this_ == NULL )
+	if (this_ == NULL)
 	{
 		SET_ERROR(BASS_ERROR_MEM);
 		goto Error;
 	}
 
 	this_->channelHandle = channelHandle;
-	if( !loadVstLibrary(this_, dllFile, createFlags) )
+	if (!loadVstLibrary(this_, dllFile, createFlags, pluginList, pluginListSize, pluginID))
 	{
 		goto Error;
 	}
 
 	// okay -- plugin loaded so far: assign it to the given channel -- 
 	// after BASS_ChannelSetDSP(), ->dispatcher() etc. should be surrounded by enterVstCritical()/leaveVstCritical()
-	if( channelHandle )
+	if (channelHandle)
 	{
-		if( !openProcess(this_, this_) )
+		if (!openProcess(this_, this_))
 		{
-			SET_ERROR( BASS_ERROR_HANDLE );
+			SET_ERROR(BASS_ERROR_HANDLE);
 			goto Error; // error already logged
 		}
 
 		this_->dspHandle = BASS_ChannelSetDSP(channelHandle, doEffectProcess, (USERPTR)this_->vstHandle, priority);
-		if( this_->dspHandle == 0 )
+		if (this_->dspHandle == 0)
 		{
 			goto Error; // error already logged by BASS
 		}
 
 		DWORD syncHandle = BASS_ChannelSetSync(channelHandle, BASS_SYNC_FREE, 0, onChannelDestroy, (USERPTR)this_->vstHandle);
-		if( syncHandle == 0 )
+		if (syncHandle == 0)
 		{
 			goto Error; // error already logged by BASS
 		}
 	}
 
-
 	// success
 	checkForwarding();
-
 	RETURN_SUCCESS(this_->vstHandle);
 
 Error:
 	// error - error already set by BASS or by using SET_ERROR
-	if( this_ )
+	if (this_)
 		unrefHandle(this_->vstHandle);
-
 	return 0;
 }
 
@@ -674,10 +1254,15 @@ BOOL BASS_VSTDEF(BASS_VST_ChannelRemoveDSP)(DWORD channelHandle, DWORD vstHandle
 
 DWORD BASS_VSTDEF(BASS_VST_ChannelCreate)(DWORD freq, DWORD chans, const void* dllFile, DWORD createFlags)
 {
+	return BASS_VST_ChannelCreateEx(freq, chans, dllFile, createFlags, NULL, 0, 0);
+}
+
+DWORD BASS_VSTDEF(BASS_VST_ChannelCreateEx)(DWORD freq, DWORD chans, const void* dllFile, DWORD createFlags, char *pluginList, int pluginListSize, int pluginID)
+{
 	BASS_VST_PLUGIN*		this_ = NULL;
 
 	// attach ok?
-	if( !s_mainOk )
+	if (!s_mainOk)
 	{
 		SET_ERROR(BASS_ERROR_UNKNOWN);
 		goto Error;
@@ -686,27 +1271,31 @@ DWORD BASS_VSTDEF(BASS_VST_ChannelCreate)(DWORD freq, DWORD chans, const void* d
 	// get the slot, load the library
 	{
 		DWORD vstHandle = BASS_StreamCreate(freq, chans, createFlags, doInstrumentProcess, 0);
-		if( vstHandle == 0 )
+		if (vstHandle == 0)
 			goto Error; // error already logged by BASS
-	
+
 		this_ = createHandle(VSTinstrument, vstHandle);
-		if( this_ == NULL )
+		if (this_ == NULL)
 		{
+			BASS_StreamFree(vstHandle);
 			SET_ERROR(BASS_ERROR_MEM);
 			goto Error;
 		}
 	}
 
+	// set a sync to free resources
+	BASS_ChannelSetSync(this_->vstHandle, BASS_SYNC_FREE, 0, onChannelDestroy, (USERPTR)this_->vstHandle);
+
 	this_->channelHandle = this_->vstHandle;
-	if( !loadVstLibrary(this_, dllFile, createFlags) )
+	if (!loadVstLibrary(this_, dllFile, createFlags, pluginList, pluginListSize, pluginID))
 	{
 		goto Error; // error already logged by loadVstLibrary()
 	}
 
 	// okay -- plugin loaded so far: start process	
-	if( !openProcess(this_, this_) )
+	if (!openProcess(this_, this_))
 	{
-		SET_ERROR( BASS_ERROR_HANDLE );
+		SET_ERROR(BASS_ERROR_HANDLE);
 		goto Error; // error already logged
 	}
 
@@ -715,7 +1304,7 @@ DWORD BASS_VSTDEF(BASS_VST_ChannelCreate)(DWORD freq, DWORD chans, const void* d
 
 Error:
 	// error - error already set by BASS or by using SET_ERROR
-	if( this_ )
+	if (this_)
 		unrefHandle(this_->vstHandle);
 	return 0;
 }
@@ -724,14 +1313,8 @@ Error:
 
 BOOL BASS_VSTDEF(BASS_VST_ChannelFree)(DWORD vstHandle)
 {
-	if( !unrefHandle(vstHandle) )
-		RETURN_ERROR( BASS_ERROR_HANDLE );
-
-	if( !BASS_StreamFree(vstHandle) )
-		return false; // error already set
-
-	// success -- checkForwarding() is not needed as forwarding only affects the VSTeffects
-	RETURN_SUCCESS(true);
+	// forward to BASS (BASS_VST resources freed in FREE sync callback)
+	return BASS_StreamFree(vstHandle);
 }
 
 
@@ -789,6 +1372,8 @@ BOOL BASS_VSTDEF(BASS_VST_GetParamInfo)(DWORD vstHandle, int paramIndex, BASS_VS
 	if( this_ == NULL )
 		RETURN_ERROR( BASS_ERROR_HANDLE );
 
+	memset(info, 0, sizeof(info));
+
 	// do what to do
 	enterVstCritical(this_);
 
@@ -803,18 +1388,15 @@ BOOL BASS_VSTDEF(BASS_VST_GetParamInfo)(DWORD vstHandle, int paramIndex, BASS_VS
 
 		largeBuf[0] = 0;
 		this_->aeffect->dispatcher(this_->aeffect, effGetParamLabel, paramIndex, 0, (void*)largeBuf, 0.0);
-		strncpy(info->unit, largeBuf, 8);
-		info->unit[kVstMaxParamStrLen] = 0;
+		strncpy(info->unit, largeBuf, sizeof(info->unit) - 1);
 
 		largeBuf[0] = 0;
 		this_->aeffect->dispatcher(this_->aeffect, effGetParamDisplay, paramIndex, 0, (void*)largeBuf, 0.0);
-		strncpy(info->display, largeBuf, 8);
-		info->display[kVstMaxParamStrLen] = 0;
+		strncpy(info->display, largeBuf, sizeof(info->display) - 1);
 
 		largeBuf[0] = 0;
 		this_->aeffect->dispatcher(this_->aeffect, effGetParamName, paramIndex, 0, (void*)largeBuf, 0.0);
-		strncpy(info->name, largeBuf, 8);
-		info->name[kVstMaxParamStrLen] = 0;
+		strncpy(info->name, largeBuf, sizeof(info->name) - 1);
 
 		if (paramIndex < this_->numDefaultValues)
 			info->defaultValue = this_->defaultValues[paramIndex];
@@ -1588,10 +2170,16 @@ BOOL BASS_VSTDEF(BASS_VST_ProcessEvent)(DWORD vstHandle, DWORD midiCh, DWORD bas
 		case MIDI_EVENT_VOLUME:		CONTROLLER(7, loparam);										break;
 		case MIDI_EVENT_PAN:		CONTROLLER(10, loparam);									break;
 		case MIDI_EVENT_EXPRESSION:	CONTROLLER(11, loparam);									break;
+		case MIDI_EVENT_BANK_LSB:	CONTROLLER(32, loparam);									break;
 		case MIDI_EVENT_SUSTAIN:	CONTROLLER(64, loparam);									break;
 		case MIDI_EVENT_PORTAMENTO:	CONTROLLER(65, loparam);									break;
+		case MIDI_EVENT_SOSTENUTO:	CONTROLLER(66, loparam);									break;
+		case MIDI_EVENT_SOFT:		CONTROLLER(67, loparam);									break;
 		case MIDI_EVENT_RESONANCE:	CONTROLLER(71, loparam);									break;
-		case MIDI_EVENT_CUTOFF:		CONTROLLER(77, loparam);									break;
+		case MIDI_EVENT_RELEASE:	CONTROLLER(72, loparam);									break;
+		case MIDI_EVENT_ATTACK:		CONTROLLER(73, loparam);									break;
+		case MIDI_EVENT_CUTOFF:		CONTROLLER(74, loparam);									break;
+		case MIDI_EVENT_DECAY:		CONTROLLER(75, loparam);									break;
 		case MIDI_EVENT_PORTANOTE:	CONTROLLER(84, loparam);									break;
 		case MIDI_EVENT_REVERB:		CONTROLLER(91, loparam);									break;
 		case MIDI_EVENT_CHORUS:		CONTROLLER(93, loparam);									break;
@@ -1599,6 +2187,7 @@ BOOL BASS_VSTDEF(BASS_VST_ProcessEvent)(DWORD vstHandle, DWORD midiCh, DWORD bas
 		case MIDI_EVENT_RESET:		CONTROLLER(121, 0);											break;
 		case MIDI_EVENT_NOTESOFF:	CONTROLLER(123, 0);											break;
 		case MIDI_EVENT_MODE:		CONTROLLER(param?126:127, 0);								break;
+		case MIDI_EVENT_CONTROL:	CONTROLLER(loparam, hiparam);								break;
 		case MIDI_EVENT_PITCHRANGE:	RPN(0,0) DATAENTRY(loparam)	RPN_NRPN_RESET					break;
 		case MIDI_EVENT_FINETUNE:	RPN(0,1) DATAENTRY_FINE(param) RPN_NRPN_RESET				break;
 		case MIDI_EVENT_COARSETUNE:	RPN(0,2) DATAENTRY(loparam)	RPN_NRPN_RESET					break;
@@ -1626,7 +2215,7 @@ BOOL BASS_VSTDEF(BASS_VST_ProcessEventRaw)(DWORD vstHandle, const void* bassEven
 
 	if( param == 0 )
 	{
-		DWORD bassEventId = ((DWORD)bassEventPtr)&0xFFFFFF;
+		DWORD bassEventId = ((DWORD)(intptr_t)bassEventPtr)&0xFFFFFF; // double cast to stop Xcode complaining
 		queueEventRaw(this_, (char)(bassEventId>>16), (char)((bassEventId>>8)&0xFF), (char)(bassEventId&0xFF), 0, 0, &error);
 	}
 	else
@@ -1643,75 +2232,18 @@ BOOL BASS_VSTDEF(BASS_VST_ProcessEventRaw)(DWORD vstHandle, const void* bassEven
 }
 
 
-BOOL BASS_VSTDEF(BASS_VST_SupportsRds)(DWORD vstHandle)
+QWORD BASS_VSTDEF(BASS_VST_Dispatcher)(DWORD vstHandle, DWORD opCode, DWORD index, QWORD value, void* ptr, float opt)
 {
+	VstIntPtr ret = 0;
 	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
-	if( this_ == NULL )
+	if (this_ == NULL)
 		RETURN_ERROR(BASS_ERROR_HANDLE);
-	
-	DWORD error = BASS_OK;
 
-	error = BASS_ERROR_FILEFORM;
+	enterVstCritical(this_);
+	ret = this_->aeffect->dispatcher(this_->aeffect, (VstInt32)opCode, (VstInt32)index, (VstIntPtr)value, ptr, opt);
+	leaveVstCritical(this_);
 
 	unrefHandle(vstHandle);
 
-	if( error == BASS_OK )
-		RETURN_SUCCESS( true )
-	else
-		RETURN_ERROR( error )
-}
-
-BOOL BASS_VSTDEF(BASS_VST_SetRdsPs)(DWORD vstHandle, char* text, bool now)
-{
-	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
-	if( this_ == NULL )
-		RETURN_ERROR(BASS_ERROR_HANDLE);
-	if( text == NULL )
-		RETURN_ERROR(BASS_ERROR_ILLPARAM);
-	DWORD error = BASS_OK;
-
-	//this_->SetRdsPsPtr(text, now);
-
-	unrefHandle(vstHandle);
-
-	if( error == BASS_OK )
-		RETURN_SUCCESS( true )
-	else
-		RETURN_ERROR( error )
-}
-
-BOOL BASS_VSTDEF(BASS_VST_SetRdsRt)(DWORD vstHandle, bool on, char* text, bool now)
-{
-	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
-	if( this_ == NULL )
-		RETURN_ERROR(BASS_ERROR_HANDLE);
-	if( text == NULL )
-		RETURN_ERROR(BASS_ERROR_ILLPARAM);
-	DWORD error = BASS_OK;
-
-	//this_->SetRdsRtPtr(on, text, now);
-
-	unrefHandle(vstHandle);
-
-	if( error == BASS_OK )
-		RETURN_SUCCESS( true )
-	else
-		RETURN_ERROR( error )
-}
-
-BOOL BASS_VSTDEF(BASS_VST_SetRdsTa)(DWORD vstHandle, bool ta, bool tp)
-{
-	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
-	if( this_ == NULL )
-		RETURN_ERROR(BASS_ERROR_HANDLE);
-	DWORD error = BASS_OK;
-
-	//this_->SetRdsTaPtr(ta, tp);
-
-	unrefHandle(vstHandle);
-
-	if( error == BASS_OK )
-		RETURN_SUCCESS( true )
-	else
-		RETURN_ERROR( error )
+	RETURN_SUCCESS((QWORD)ret);
 }

@@ -22,17 +22,17 @@
 
 long fileSelOpen(BASS_VST_PLUGIN* this_, VstFileSelect* vstFs)
 {
-	OPENFILENAME	ofn;
-
 	// allocate the memory to hold the file name
 	if( this_ == NULL || vstFs == NULL )
 		goto Cleanup;
+#ifndef __APPLE__
 	#define BUFFER_BYTES 4096
-	vstFs->reserved = (int)malloc(BUFFER_BYTES+32/*32 for the faked array*/);
+	vstFs->reserved = (VstIntPtr)malloc(BUFFER_BYTES+32/*32 for the faked array*/);
 	if( vstFs->reserved == NULL )
 		goto Cleanup;
 
 	// show the file selector
+	OPENFILENAME	ofn;
 	memset(&ofn, 0, sizeof(OPENFILENAME));
 	ofn.lStructSize = sizeof(OPENFILENAME);
 	ofn.lpstrFilter = "*.*\0*.*\0\0";
@@ -93,6 +93,7 @@ long fileSelOpen(BASS_VST_PLUGIN* this_, VstFileSelect* vstFs)
 			vstFs->returnPath = ofn.lpstrFile;
 		}
 	}
+#endif
 
 Cleanup:
 	return 1; // we support file selection - always return 1
