@@ -29,7 +29,9 @@ long				s_unloadPendingCountdown = 0;
 static void checkForChangedParam(BASS_VST_PLUGIN* this_)
 {
 	// check if any parameters have beed changed ...
-	assert( _CrtCheckMemory() );
+#ifndef __linux__
+    assert( _CrtCheckMemory() );
+#endif
 
 	bool paramChanged = false;
 	int  oldParamCount = this_->numLastValues;
@@ -72,7 +74,9 @@ void idleDo()
 		s_inHere = true;
 		EnterCriticalSection(&s_idleCritical);
 
-			assert( _CrtCheckMemory() );
+#ifndef __linux__
+            assert( _CrtCheckMemory() );
+#endif
 			BASS_VST_PLUGIN* this_;
 			DWORD vstHandle;
 			bool removeElem;
@@ -112,7 +116,9 @@ void idleDo()
 				}
 				else
 				{
-					assert( _CrtCheckMemory() );
+#ifndef __linux__
+                    assert( _CrtCheckMemory() );
+#endif
 					removeElem = true;
 				}
 
@@ -140,8 +146,10 @@ void idleDo()
 
 						while( unloadCount > 0 )
 						{
-#ifndef __APPLE__
+#ifdef _WIN32
 							FreeLibrary(inst);
+#elif __linux__
+                            dlclose(inst);
 #else
 //							CFBundleUnloadExecutable (inst); // causes a crash with some VST?
 							CFRelease (inst);
@@ -199,14 +207,20 @@ void updateIdleTimers(BASS_VST_PLUGIN* this_)
 #ifdef __APPLE__
 #include <Carbon/Carbon.h>
 static EventLoopTimerRef s_idleTimerHandle = 0;
-#else
+#elif _WIN32
 static UINT			s_idleTimerHandle = 0;
+#else
+#include <time.h>
+#include <signal.h>
+static timer_t      s_idleTimerHandle = 0;
 #endif
 
 #ifdef __APPLE__
 pascal void idleTimerProc(EventLoopTimerRef inTimer, void *inUserData)
-#else
+#elif _WIN32
 static VOID CALLBACK idleTimerProc(HWND,UINT,UINT_PTR,DWORD)
+#else
+static void idleTimerProc(int sig)
 #endif
 {
 	idleDo();
@@ -219,8 +233,20 @@ void createIdleTimers()
 	{
 #ifdef __APPLE__
 		InstallEventLoopTimer(GetMainEventLoop(), kEventDurationNoWait, IDLE_FREQ * kEventDurationSecond / 1000, NewEventLoopTimerUPP(idleTimerProc), 0, &s_idleTimerHandle);
-#else
+#elif _WIN32
 		s_idleTimerHandle = (UINT)SetTimer(0, 0, IDLE_FREQ, idleTimerProc);
+#else
+        (void) signal(SIGALRM, idleTimerProc);
+
+        struct itimerspec value;
+        value.it_value.tv_sec = 0;//waits for 5 seconds before sending timer signal
+        value.it_value.tv_nsec = IDLE_FREQ * 1000000;
+
+        value.it_interval.tv_sec = 0;//sends timer signal every 5 seconds
+        value.it_interval.tv_nsec = IDLE_FREQ * 1000000;
+
+        timer_create (CLOCK_REALTIME, NULL, &s_idleTimerHandle);
+        timer_settime (s_idleTimerHandle, 0, &value, NULL);
 #endif
 	}
 }
@@ -233,8 +259,19 @@ void killIdleTimers()
 	{
 #ifdef __APPLE__
 		RemoveEventLoopTimer(s_idleTimerHandle);
-#else
+#elif _WIN32
 		KillTimer(NULL, s_idleTimerHandle);
+#else
+        struct itimerspec value;
+
+        value.it_value.tv_sec = 0;
+        value.it_value.tv_nsec = 0;
+
+        value.it_interval.tv_sec = 0;
+        value.it_interval.tv_nsec = 0;
+
+        timer_settime (s_idleTimerHandle, 0, &value, NULL);
+        timer_delete(s_idleTimerHandle);
 #endif
 		s_idleTimerHandle = 0;
 	}

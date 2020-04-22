@@ -1,7 +1,7 @@
 
 #include "sjhash.h"
 #include <assert.h>
-#ifdef __APPLE__
+#ifndef _WIN32
 	#include <stdlib.h>
 #else
 	#include <malloc.h>

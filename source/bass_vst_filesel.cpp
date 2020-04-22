@@ -25,7 +25,7 @@ long fileSelOpen(BASS_VST_PLUGIN* this_, VstFileSelect* vstFs)
 	// allocate the memory to hold the file name
 	if( this_ == NULL || vstFs == NULL )
 		goto Cleanup;
-#ifndef __APPLE__
+#ifdef _WIN32
 	#define BUFFER_BYTES 4096
 	vstFs->reserved = (VstIntPtr)malloc(BUFFER_BYTES+32/*32 for the faked array*/);
 	if( vstFs->reserved == NULL )
