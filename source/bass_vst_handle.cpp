@@ -246,7 +246,7 @@ BOOL unrefHandle(DWORD handle)
 
 
 
-#ifndef __APPLE__
+#ifdef _WIN32
 BOOL tryEnterVstCritical(BASS_VST_PLUGIN* this_)
 {
 	static BOOL(WINAPI * m_pfnTryEnterCriticalSection)(CRITICAL_SECTION*) = NULL;

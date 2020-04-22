@@ -64,7 +64,7 @@ static bool s_mainOk = false;
 
 
 // global initialization
-#ifdef __APPLE__
+#ifndef _WIN32
 __attribute__((constructor))
 #endif
 static void mainInit()
@@ -73,8 +73,10 @@ static void mainInit()
 	if (HIWORD(BASS_GetVersion())!=BASSVERSION || !GetBassFunc()) {
 #ifdef _WIN32
 		MessageBox(0,"Incorrect BASS.DLL version ("BASSVERSIONTEXT" is required)","BASS_VST",MB_ICONERROR);
+#elif __APPLE__
+        fputs("BASS_VST: Incorrect BASS version ("BASSVERSIONTEXT" is required)\n",stderr);
 #else
-		fputs("BASS_VST: Incorrect BASS version ("BASSVERSIONTEXT" is required)\n",stderr);
+        fputs("BASS_VST: Incorrect BASS version (" BASSVERSIONTEXT " is required)\n",stderr);
 #endif
 		return;
 	}
@@ -93,7 +95,7 @@ static void mainInit()
 
 
 // global exit
-#ifdef __APPLE__
+#ifndef _WIN32
 __attribute__((destructor))
 #endif
 static void mainExit()
@@ -188,7 +190,7 @@ static void calcVstTimeInfo(BASS_VST_PLUGIN* this_, VstIntPtr toCalc)
 
 	if( toCalc & kVstNanosValid )
 	{
-#ifndef __APPLE__
+#ifdef _WIN32
 		this_->vstTimeInfo.nanoSeconds = (double)timeGetTime() * 1000000.0L;
 #else
 		this_->vstTimeInfo.nanoSeconds = (double)clock() * 1000000.0L;
@@ -309,6 +311,7 @@ static VstIntPtr audioMasterCallbackImpl(AEffect* aeffect_, // on load, aeffect_
 			idleDo();							// call effEditIdle for all open editors too) 
 			break;
 
+#if kVstVersion < 2400   // deprecated in VST 2.4 r2
 		case audioMasterPinConnected:			
 			ret = index >= 2? 1 : 0;			// Inquire if an input or output is beeing connected;
 			if( this_->channelHandle )			// index enumerates input or output counting from zero,
@@ -320,6 +323,7 @@ static VstIntPtr audioMasterCallbackImpl(AEffect* aeffect_, // on load, aeffect_
 				}
 			}
 			break;
+#endif
 
 		// VST 2.00 opcodes
 		////////////////////////////////////////////////////////////
@@ -466,8 +470,10 @@ static void closeVstLibrary(BASS_VST_PLUGIN* this_)
 	{
 		if (this_->aeffect)
 			this_->aeffect->dispatcher(this_->aeffect, effClose, 0, 0, NULL, 0.0);
-#ifndef __APPLE__
+#ifdef _WIN32
 		FreeLibrary(this_->hinst);
+#elif __linux__
+        dlclose(this_->hinst);
 #else
 		if (!this_->aeffect)
 			CFBundleUnloadExecutable(this_->hinst);
@@ -488,12 +494,13 @@ static BOOL loadVstLibrary(BASS_VST_PLUGIN* this_, const void* dllFile, DWORD cr
 	//__try
 	try
 	{
-#ifndef __APPLE__
+#ifdef _WIN32
 		if (createFlags & BASS_UNICODE)
 			this_->hinst = LoadLibraryW((const LPCWSTR)dllFile);
 		else
 			this_->hinst = LoadLibraryA((const char*)dllFile);
-
+#elif __linux__
+        this_->hinst = dlopen((const char*)dllFile, RTLD_LAZY);
 #else
 		CFStringRef fileNameString = CFStringCreateWithCString(kCFAllocatorDefault, (const char *)dllFile, kCFStringEncodingUTF8);
 		if (fileNameString == 0)
@@ -525,12 +532,18 @@ static BOOL loadVstLibrary(BASS_VST_PLUGIN* this_, const void* dllFile, DWORD cr
 	}
 
 	// get the plugin pointer
-#ifndef __APPLE__
+#ifdef _WIN32
 	dllMainEntryFuncPtr = (dllMainEntryFuncType)GetProcAddress(this_->hinst, "VSTPluginMain");
 	if (dllMainEntryFuncPtr == NULL)
 	{
 		dllMainEntryFuncPtr = (dllMainEntryFuncType)GetProcAddress(this_->hinst, "main");
 	}
+#elif __linux__
+    dllMainEntryFuncPtr = (dllMainEntryFuncType)dlsym(this_->hinst, "VSTPluginMain");
+    if (dllMainEntryFuncPtr == NULL)
+    {
+        dllMainEntryFuncPtr = (dllMainEntryFuncType)dlsym(this_->hinst, "main");
+    }
 #else
 	dllMainEntryFuncPtr = (dllMainEntryFuncType)CFBundleGetFunctionPointerForName(this_->hinst, CFSTR("VSTPluginMain"));
 	if (!dllMainEntryFuncPtr)
@@ -708,11 +721,13 @@ BOOL BASS_VSTDEF(BASS_VST_CheckPreset)(const void* dllFile, DWORD createFlags)
 	//__try
 	try
 	{
-#ifndef __APPLE__
+#ifdef _WIN32
 		if (createFlags & BASS_UNICODE)
 			hinst = LoadLibraryW((LPCWSTR)dllFile); // VC2008 requires LPCWSTR; before we're using const unsigned short
 		else
 			hinst = LoadLibraryA((const char*)dllFile);
+#elif __linux__
+        hinst = dlopen((const char*)dllFile, RTLD_LAZY);
 #else
 		CFStringRef fileNameString = CFStringCreateWithCString(NULL, (const char *)dllFile, kCFStringEncodingUTF8);
 		if (fileNameString == 0)
@@ -744,12 +759,18 @@ BOOL BASS_VSTDEF(BASS_VST_CheckPreset)(const void* dllFile, DWORD createFlags)
 	}
 
 	// get the plugin pointer
-#ifndef __APPLE__
+#ifdef _WIN32
 	dllMainEntryFuncPtr = (dllMainEntryFuncType)GetProcAddress(hinst, "VSTPluginMain");
 	if (dllMainEntryFuncPtr == NULL)
 	{
 		dllMainEntryFuncPtr = (dllMainEntryFuncType)GetProcAddress(hinst, "main");
 	}
+#elif __linux__
+    dllMainEntryFuncPtr = (dllMainEntryFuncType)dlsym(hinst, "VSTPluginMain");
+    if (dllMainEntryFuncPtr == NULL)
+    {
+        dllMainEntryFuncPtr = (dllMainEntryFuncType)dlsym(hinst, "main");
+    }
 #else
 	dllMainEntryFuncPtr = (dllMainEntryFuncType)CFBundleGetFunctionPointerForName(hinst, CFSTR("VSTPluginMain"));
 	if (!dllMainEntryFuncPtr)
@@ -760,8 +781,10 @@ BOOL BASS_VSTDEF(BASS_VST_CheckPreset)(const void* dllFile, DWORD createFlags)
 
 	if (dllMainEntryFuncPtr == NULL)
 	{
-#ifndef __APPLE__
+#ifdef _WIN32
 		FreeLibrary(hinst);
+#elif __linux__
+        dlclose(hinst);
 #else
 		CFBundleUnloadExecutable(hinst);
 		CFRelease(hinst);
@@ -770,8 +793,10 @@ BOOL BASS_VSTDEF(BASS_VST_CheckPreset)(const void* dllFile, DWORD createFlags)
 		return false;
 	}
 
-#ifndef __APPLE__
+#ifdef _WIN32
 	FreeLibrary(hinst);
+#elif __linux__
+    dlclose(hinst);
 #else
 //	CFBundleUnloadExecutable(hinst);
 	CFRelease(hinst);
@@ -1551,7 +1576,9 @@ static BASS_VST_PLUGIN* refHandle_checkProgramIndex(DWORD vstHandle, int program
 
 int BASS_VSTDEF(BASS_VST_GetProgramCount)(DWORD vstHandle)
 {
+#ifndef __linux__
 	assert( _CrtCheckMemory() );
+#endif
 
 	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
 	if( this_ == NULL )
@@ -1561,7 +1588,9 @@ int BASS_VSTDEF(BASS_VST_GetProgramCount)(DWORD vstHandle)
 
 	unrefHandle(vstHandle);
 
-	assert( _CrtCheckMemory() );
+#ifndef __linux__
+    assert( _CrtCheckMemory() );
+#endif
 
 	RETURN_SUCCESS( programCount );
 }
@@ -1570,7 +1599,9 @@ int BASS_VSTDEF(BASS_VST_GetProgramCount)(DWORD vstHandle)
 
 int BASS_VSTDEF(BASS_VST_GetProgram)(DWORD vstHandle)
 {
-	assert( _CrtCheckMemory() );
+#ifndef __linux__
+    assert( _CrtCheckMemory() );
+#endif
 
 	BASS_VST_PLUGIN* this_ = refHandle(vstHandle);
 	if( this_ == NULL )
@@ -1582,7 +1613,9 @@ int BASS_VSTDEF(BASS_VST_GetProgram)(DWORD vstHandle)
 
 	unrefHandle(vstHandle);
 
-	assert( _CrtCheckMemory() );
+#ifndef __linux__
+    assert( _CrtCheckMemory() );
+#endif
 
 	RETURN_SUCCESS( program )
 }
@@ -1591,7 +1624,9 @@ int BASS_VSTDEF(BASS_VST_GetProgram)(DWORD vstHandle)
 
 const char* BASS_VSTDEF(BASS_VST_GetProgramName)(DWORD vstHandle, int programIndex)
 {
-	assert( _CrtCheckMemory() );
+#ifndef __linux__
+    assert( _CrtCheckMemory() );
+#endif
 
 	BASS_VST_PLUGIN* this_ = refHandle_checkProgramIndex(vstHandle, programIndex);
 	if( this_ == NULL )
@@ -1624,7 +1659,9 @@ const char* BASS_VSTDEF(BASS_VST_GetProgramName)(DWORD vstHandle, int programInd
 
 	unrefHandle(vstHandle);
 
-	assert( _CrtCheckMemory() );
+#ifndef __linux__
+    assert( _CrtCheckMemory() );
+#endif
 
 	RETURN_SUCCESS( programName );
 }
@@ -1633,7 +1670,9 @@ const char* BASS_VSTDEF(BASS_VST_GetProgramName)(DWORD vstHandle, int programInd
 
 const float* BASS_VSTDEF(BASS_VST_GetProgramParam)(DWORD vstHandle, int programIndex, DWORD* length)
 {
-	assert( _CrtCheckMemory() );
+#ifndef __linux__
+    assert( _CrtCheckMemory() );
+#endif
 
 	*length = 0;
 	BASS_VST_PLUGIN* this_ = refHandle_checkProgramIndex(vstHandle, programIndex);
@@ -1671,7 +1710,9 @@ const float* BASS_VSTDEF(BASS_VST_GetProgramParam)(DWORD vstHandle, int programI
 
 	unrefHandle(vstHandle);
 	
-	assert( _CrtCheckMemory() );
+#ifndef __linux__
+    assert( _CrtCheckMemory() );
+#endif
 
 	RETURN_SUCCESS( param );
 }

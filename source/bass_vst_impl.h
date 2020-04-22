@@ -37,6 +37,16 @@
 #define LeaveCriticalSection			pthread_mutex_unlock
 #define DeleteCriticalSection			pthread_mutex_destroy	
 typedef CFBundleRef HINSTANCE;
+#elif __linux__
+#include <dlfcn.h>
+#include <pthread.h>
+#define CRITICAL_SECTION				pthread_mutex_t
+#define InitializeCriticalSection(a)	pthread_mutex_init(a, NULL)
+#define TryEnterCriticalSection			!pthread_mutex_trylock
+#define EnterCriticalSection			pthread_mutex_lock
+#define LeaveCriticalSection			pthread_mutex_unlock
+#define DeleteCriticalSection			pthread_mutex_destroy
+typedef void* HINSTANCE;
 #else
 #include <windows.h>
 #include <crtdbg.h>
@@ -63,12 +73,17 @@ typedef CFBundleRef HINSTANCE;
 #include "bass/bassmidi.h"
 
 // BASS VST includes
-#ifdef __APPLE__
+#ifndef _WIN32
 #pragma GCC visibility push(default)
 #endif
 #include "bass_vst.h"
-#ifdef __APPLE__
+#ifndef _WIN32
 #pragma GCC visibility pop
+#endif
+
+// Fix build aeffect.h on linux
+#ifdef __linux__
+#define __cdecl __attribute__((__cdecl__))
 #endif
 
 // VST DSK includes
